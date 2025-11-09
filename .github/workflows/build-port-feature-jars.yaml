@@ -32,6 +32,12 @@ jobs:
           java-version: 17
           cache: gradle
 
+      - name: Set version to 2.0.9-ports
+        run: |
+          echo "Setting VERSION_NAME to 2.0.9-ports"
+          sed -i 's/VERSION_NAME=2.0.9/VERSION_NAME=2.0.9-ports/' gradle.properties
+          grep VERSION_NAME gradle.properties
+
       - name: Build Maestro CLI distribution
         run: ./gradlew clean :maestro-cli:installDist --no-daemon --no-parallel
 
