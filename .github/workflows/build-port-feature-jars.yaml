@@ -1,0 +1,141 @@
+name: Build Port Feature JARs
+
+on:
+  workflow_dispatch:
+    inputs:
+      create_release:
+        description: 'Create GitHub release'
+        required: false
+        type: boolean
+        default: false
+      release_tag:
+        description: 'Release tag (e.g., fork-2.0.9-ports)'
+        required: false
+        type: string
+        default: 'fork-2.0.9-ports'
+  push:
+    branches:
+      - feature/driver-host-port
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Clone repository
+        uses: actions/checkout@v4
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: zulu
+          java-version: 17
+          cache: gradle
+
+      - name: Build Maestro CLI distribution
+        run: ./gradlew clean :maestro-cli:installDist --no-daemon --no-parallel
+
+      - name: Verify JARs built
+        run: |
+          echo "Checking for Maestro JARs..."
+          ls -lh maestro-cli/build/install/maestro/lib/maestro-*.jar
+          JAR_COUNT=$(ls maestro-cli/build/install/maestro/lib/maestro-*.jar | wc -l)
+          echo "Found $JAR_COUNT Maestro JARs"
+          if [ "$JAR_COUNT" -ne 9 ]; then
+            echo "Error: Expected 9 JARs, found $JAR_COUNT"
+            exit 1
+          fi
+
+      - name: Create maestro-jars.tar.gz
+        run: |
+          cd maestro-cli/build/install/maestro/lib
+          tar -czf maestro-jars.tar.gz maestro-*.jar
+          mv maestro-jars.tar.gz $GITHUB_WORKSPACE/
+          cd $GITHUB_WORKSPACE
+          echo "Archive created:"
+          ls -lh maestro-jars.tar.gz
+
+      - name: Upload JARs as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: maestro-jars
+          path: maestro-jars.tar.gz
+          retention-days: 30
+
+      - name: Create GitHub Release
+        if: ${{ github.event.inputs.create_release == 'true' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="${{ github.event.inputs.release_tag }}"
+
+          # Create release notes
+          cat > release-notes.md << 'EOF'
+          ## Multi-Device Port Support
+
+          This unofficial release adds the `--driver-host-port` CLI option to enable concurrent testing on multiple devices/simulators.
+
+          ### What's New
+          - ✨ New `--driver-host-port` option to specify custom AndroidDriver port
+          - 🚀 Run tests in parallel on multiple devices without port conflicts
+          - 🔧 Works with both Android devices and iOS simulators
+
+          ### Installation
+
+          For users with Maestro already installed:
+
+          ```bash
+          # Download the upgrade script
+          curl -fsSL https://raw.githubusercontent.com/${{ github.repository }}/feature/driver-host-port/upgrade-maestro-ports.sh -o upgrade-maestro-ports.sh
+
+          # Run the upgrade
+          bash upgrade-maestro-ports.sh
+          ```
+
+          ### Usage
+
+          Run tests on multiple devices simultaneously:
+
+          ```bash
+          # Terminal 1 - Device 1
+          maestro --driver-host-port 7005 --device device1 test auth.yaml
+
+          # Terminal 2 - Device 2
+          maestro --driver-host-port 7006 --device device2 test products.yaml
+          ```
+
+          ### Restoring Original Version
+
+          ```bash
+          bash ~/.maestro-backups/backup/restore.sh
+          ```
+
+          ### Credits
+          - Based on https://github.com/mobile-dev-inc/maestro
+          - Fixes issues: #2339, #1818, #2556, #1485
+          - Credit to @avinash-bharti for original work in #2339
+
+          ---
+
+          **Note**: This is an unofficial release. Official Maestro releases are at https://github.com/mobile-dev-inc/maestro/releases
+          EOF
+
+          # Create release
+          gh release create "$TAG" \
+            maestro-jars.tar.gz \
+            --title "Maestro 2.0.9 with --driver-host-port support" \
+            --notes-file release-notes.md
+
+      - name: Build Summary
+        run: |
+          echo "### Build Successful ✅" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**JARs Package:** maestro-jars.tar.gz" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Size:** $(ls -lh maestro-jars.tar.gz | awk '{print $5}')" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Download:** Check the Artifacts section above" >> $GITHUB_STEP_SUMMARY
+          if [ "${{ github.event.inputs.create_release }}" == "true" ]; then
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "**Release:** https://github.com/${{ github.repository }}/releases/tag/${{ github.event.inputs.release_tag }}" >> $GITHUB_STEP_SUMMARY
+          fi
