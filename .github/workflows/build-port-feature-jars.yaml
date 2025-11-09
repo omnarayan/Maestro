@@ -81,10 +81,25 @@ jobs:
 
           This unofficial release adds the `--driver-host-port` CLI option to enable concurrent testing on multiple devices/simulators.
 
+          ### Disclosure & Context
+
+          This feature was built by the [DeviceLab.dev](https://devicelab.dev) team to enable parallel testing across distributed device networks.
+
+          DeviceLab turns your team's Android & iOS devices into a private, secure testing cloud. Running concurrent Maestro tests across multiple devices required the ability to specify custom ports, which wasn't possible with the default port 7001 configuration.
+
+          While built for DeviceLab's use case, this feature is useful for anyone needing concurrent multi-device testing with Maestro.
+
           ### What's New
           - ✨ New `--driver-host-port` option to specify custom AndroidDriver port
           - 🚀 Run tests in parallel on multiple devices without port conflicts
           - 🔧 Works with both Android devices and iOS simulators
+
+          ### Use Cases
+
+          This feature enables concurrent testing on multiple devices for:
+          - **Distributed testing platforms** like [DeviceLab.dev](https://devicelab.dev) (Private device testing cloud)
+          - **Local multi-device testing** setups (Test on multiple devices/simulators simultaneously)
+          - **CI/CD pipelines** with parallel test execution (Run different test suites in parallel)
 
           ### Installation
 
@@ -92,7 +107,7 @@ jobs:
 
           ```bash
           # Download the upgrade script
-          curl -fsSL https://raw.githubusercontent.com/${{ github.repository }}/feature/driver-host-port/upgrade-maestro-ports.sh -o upgrade-maestro-ports.sh
+          curl -fsSL https://raw.githubusercontent.com/${{ github.repository }}/feature/driver-host-port-distribution/upgrade-maestro-ports.sh -o upgrade-maestro-ports.sh
 
           # Run the upgrade
           bash upgrade-maestro-ports.sh
@@ -120,6 +135,9 @@ jobs:
           - Based on https://github.com/mobile-dev-inc/maestro
           - Fixes issues: #2339, #1818, #2556, #1485
           - Credit to @avinash-bharti for original work in #2339
+
+          ### Related PRs
+          - Upstream PR: https://github.com/mobile-dev-inc/maestro/pull/2821
 
           ---
 
