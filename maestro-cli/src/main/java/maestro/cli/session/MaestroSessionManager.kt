@@ -105,6 +105,9 @@ object MaestroSessionManager {
             selectedDevice = selectedDevice,
             connectToExistingSession = if (isStudio) {
                 false
+            } else if (driverHostPort != null) {
+                // Custom port specified → disable session reuse for parallel execution
+                false
             } else {
                 SessionStore.hasActiveSessions(
                     sessionId,
