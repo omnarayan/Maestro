@@ -1,0 +1,179 @@
+name: Build iOS Real Device JARs
+
+on:
+  workflow_dispatch:
+    inputs:
+      branch:
+        description: 'Branch to build from'
+        required: false
+        type: string
+        default: 'feature/ios-real-device-support'
+      create_release:
+        description: 'Create GitHub release'
+        required: false
+        type: boolean
+        default: false
+      release_tag:
+        description: 'Release tag (e.g., ios-real-device-2.0.9)'
+        required: false
+        type: string
+        default: 'ios-real-device-2.0.9'
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Clone repository
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.branch || 'feature/ios-real-device-support' }}
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: zulu
+          java-version: 17
+          cache: gradle
+
+      - name: Build Maestro CLI distribution
+        run: ./gradlew clean :maestro-cli:installDist --no-daemon --no-parallel
+
+      - name: Verify JARs built
+        run: |
+          echo "Checking for Maestro JARs..."
+          ls -lh maestro-cli/build/install/maestro/lib/maestro-*.jar
+          JAR_COUNT=$(ls maestro-cli/build/install/maestro/lib/maestro-*.jar | wc -l)
+          echo "Found $JAR_COUNT Maestro JARs"
+          if [ "$JAR_COUNT" -ne 9 ]; then
+            echo "Error: Expected 9 JARs, found $JAR_COUNT"
+            exit 1
+          fi
+
+      - name: Package iOS XCTest Runner source code
+        run: |
+          echo "Packaging iOS XCTest runner source code..."
+
+          # Create tar.gz with the entire maestro-ios-xctest-runner directory
+          tar -czf maestro-ios-xctest-runner-source.tar.gz maestro-ios-xctest-runner/
+
+          echo "iOS XCTest runner source archive created:"
+          ls -lh maestro-ios-xctest-runner-source.tar.gz
+
+      - name: Create maestro-jars.tar.gz
+        run: |
+          cd maestro-cli/build/install/maestro/lib
+          tar -czf maestro-jars.tar.gz maestro-*.jar
+          mv maestro-jars.tar.gz $GITHUB_WORKSPACE/
+          cd $GITHUB_WORKSPACE
+          echo "JARs archive created:"
+          ls -lh maestro-jars.tar.gz
+
+      - name: Upload JARs as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: maestro-jars
+          path: maestro-jars.tar.gz
+          retention-days: 30
+
+      - name: Upload iOS XCTest Runner as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: maestro-ios-xctest-runner-source
+          path: maestro-ios-xctest-runner-source.tar.gz
+          retention-days: 30
+
+      - name: Create GitHub Release
+        if: ${{ github.event.inputs.create_release == 'true' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="${{ github.event.inputs.release_tag }}"
+
+          # Create release notes
+          cat > release-notes.md << 'EOF'
+          ## iOS Real Device Testing Support
+
+          This release adds support for running Maestro tests on physical iOS devices using the `--driver-host-port` flag.
+
+          ### What's New
+          - ✨ Support for physical iOS devices (not just simulators)
+          - 🔧 `--driver-host-port` option to connect to external XCTest servers
+          - 🚀 No Apple Team ID required when using custom driver port
+          - 📱 Works with port forwarding for real device communication
+
+          ### Installation
+
+          ```bash
+          # Download and extract the JARs
+          curl -L https://github.com/${{ github.repository }}/releases/download/$TAG/maestro-jars.tar.gz -o maestro-jars.tar.gz
+          tar -xzf maestro-jars.tar.gz
+
+          # Copy to your Maestro installation
+          cp maestro-*.jar ~/.maestro/lib/
+
+          # Download and extract the iOS XCTest runner source code
+          curl -L https://github.com/${{ github.repository }}/releases/download/$TAG/maestro-ios-xctest-runner-source.tar.gz -o maestro-ios-xctest-runner-source.tar.gz
+          tar -xzf maestro-ios-xctest-runner-source.tar.gz
+          ```
+
+          ### Building XCTest Runner for Your Device
+
+          ```bash
+          # Navigate to the extracted source directory
+          cd maestro-ios-xctest-runner
+
+          # Build for your real device (replace with your Team ID and device UDID)
+          DESTINATION="platform=iOS,id=<device-udid>" \
+          DERIVED_DATA_PATH="driver-iphoneos" \
+          DEVELOPMENT_TEAM=<your-team-id> \
+          bash build-maestro-ios-runner.sh
+          ```
+
+          ### Usage
+
+          ```bash
+          # Start the XCTest server on your physical device
+          cd maestro-ios-xctest-runner/driver-iphoneos/Build/Products
+          xcodebuild test-without-building \
+            -xctestrun maestro-driver-ios_*.xctestrun \
+            -destination "platform=iOS,id=<device-udid>"
+
+          # In another terminal, set up port forwarding (port 22087 to 7005)
+          # Use iproxy or pymobiledevice3 for port forwarding
+
+          # Run tests with custom driver port
+          maestro --driver-host-port 7005 --platform ios --udid <device-udid> test flow.yaml
+          ```
+
+          ### Credits
+          - Based on https://github.com/mobile-dev-inc/maestro
+          - Built for iOS real device testing support
+
+          ---
+
+          **Note**: This is an experimental build for iOS real device testing.
+          EOF
+
+          # Create release with both artifacts
+          gh release create "$TAG" \
+            maestro-jars.tar.gz \
+            maestro-ios-xctest-runner-source.tar.gz \
+            --title "Maestro with iOS Real Device Support" \
+            --notes-file release-notes.md
+
+      - name: Build Summary
+        run: |
+          echo "### Build Successful ✅" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Branch:** ${{ github.event.inputs.branch || 'feature/ios-real-device-support' }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**JARs Package:** maestro-jars.tar.gz" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Size:** $(ls -lh maestro-jars.tar.gz | awk '{print $5}')" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Download:** Check the Artifacts section above" >> $GITHUB_STEP_SUMMARY
+          if [ "${{ github.event.inputs.create_release }}" == "true" ]; then
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "**Release:** https://github.com/${{ github.repository }}/releases/tag/${{ github.event.inputs.release_tag }}" >> $GITHUB_STEP_SUMMARY
+          fi
