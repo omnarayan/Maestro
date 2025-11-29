@@ -7,9 +7,11 @@ import hierarchy.ViewHierarchy
 import okio.Sink
 import org.slf4j.LoggerFactory
 import util.LocalIOSDevice
+import util.LocalIOSDeviceController
 import xcuitest.api.DeviceInfo
 import xcuitest.installer.LocalXCTestInstaller
 import java.io.InputStream
+import java.nio.file.Paths
 
 class DeviceControlIOSDevice(override val deviceId: String) : IOSDevice {
 
@@ -48,7 +50,39 @@ class DeviceControlIOSDevice(override val deviceId: String) : IOSDevice {
     }
 
     override fun install(stream: InputStream) {
-        TODO("Not yet implemented")
+        // For real devices, we read app path from system property set by CLI
+        val appFilePath = System.getProperty("maestro.appFile")
+        if (appFilePath != null) {
+            val appPath = Paths.get(appFilePath)
+            if (!appPath.toFile().exists()) {
+                throw IllegalStateException(
+                    "App file not found: $appFilePath\n" +
+                    "Please ensure the --app-file path is correct and the file exists."
+                )
+            }
+            logger.info("Installing app from: $appFilePath")
+            try {
+                LocalIOSDeviceController.install(deviceId, appPath)
+            } catch (e: Exception) {
+                throw IllegalStateException(
+                    "Failed to install app on device $deviceId\n" +
+                    "App file: $appFilePath\n" +
+                    "Error: ${e.message}\n" +
+                    "Possible causes:\n" +
+                    "  - App is not signed for this device\n" +
+                    "  - Device is not in developer mode\n" +
+                    "  - App bundle is corrupted or invalid\n" +
+                    "  - Device storage is full",
+                    e
+                )
+            }
+        } else {
+            throw IllegalStateException(
+                "No app file specified for installation.\n" +
+                "Use --app-file to provide the app binary (.ipa or .app) for installation.\n" +
+                "Example: maestro test --app-file /path/to/app.ipa flow.yaml"
+            )
+        }
     }
 
     override fun uninstall(id: String) {
@@ -56,13 +90,32 @@ class DeviceControlIOSDevice(override val deviceId: String) : IOSDevice {
     }
 
     override fun clearAppState(id: String) {
-        logger.warn(
-            "clearState is not supported on real iOS devices due to iOS security restrictions. " +
-            "App state will NOT be cleared. " +
-            "Workarounds: (1) Remove clearState from tests, (2) Add app-level reset, " +
-            "(3) Manually reinstall app between test runs"
-        )
-        // Do nothing - test continues without clearing state
+        val appFilePath = System.getProperty("maestro.appFile")
+        if (appFilePath == null) {
+            logger.warn(
+                "clearState requires --app-file on real iOS devices. " +
+                "App state will NOT be cleared. " +
+                "Use: maestro test --app-file /path/to/app.ipa flow.yaml"
+            )
+            return
+        }
+
+        logger.info("Clearing app state for $id by reinstalling")
+
+        // 1. Stop the app
+        stop(id)
+
+        // 2. Uninstall the app
+        try {
+            uninstall(id)
+        } catch (e: Exception) {
+            logger.warn("Failed to uninstall app $id (may not be installed): ${e.message}")
+        }
+
+        // 3. Reinstall the app
+        install(ByteArray(0).inputStream()) // stream is ignored, uses System property
+
+        logger.info("App state cleared for $id")
     }
 
     override fun clearKeychain(): Result<Unit, Throwable> {
@@ -74,7 +127,7 @@ class DeviceControlIOSDevice(override val deviceId: String) : IOSDevice {
     }
 
     override fun stop(id: String) {
-        error("not supported")
+        LocalIOSDeviceController.terminate(deviceId, id)
     }
 
     override fun isKeyboardVisible(): Boolean {
