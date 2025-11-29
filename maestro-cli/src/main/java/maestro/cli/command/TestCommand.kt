@@ -209,6 +209,12 @@ class TestCommand : Callable<Int> {
     )
     private var appleTeamId: String? = null
 
+    @Option(
+        names = ["--app-file"],
+        description = ["App binary (.apk, .app, or .ipa) to install before running tests"]
+    )
+    private var appFile: File? = null
+
     @CommandLine.Spec
     lateinit var commandSpec: CommandLine.Model.CommandSpec
 
@@ -231,6 +237,14 @@ class TestCommand : Callable<Int> {
             flattenDebugOutput = flattenDebugOutput,
             printToConsole = parent?.verbose == true,
         )
+
+        // Set app file path as system property (process-scoped) for use by device controllers
+        appFile?.let { file ->
+            if (!file.exists()) {
+                throw CliError("App file does not exist: ${file.absolutePath}")
+            }
+            System.setProperty("maestro.appFile", file.absolutePath)
+        }
 
         if (shardSplit != null && shardAll != null) {
             throw CliError("Options --shard-split and --shard-all are mutually exclusive.")
