@@ -102,17 +102,14 @@ class DeviceControlIOSDevice(override val deviceId: String) : IOSDevice {
 
         logger.info("Clearing app state for $id by reinstalling")
 
-        // 1. Stop the app
-        stop(id)
-
-        // 2. Uninstall the app
+        // 1. Uninstall the app (iOS will auto-terminate if running)
         try {
             uninstall(id)
         } catch (e: Exception) {
             logger.warn("Failed to uninstall app $id (may not be installed): ${e.message}")
         }
 
-        // 3. Reinstall the app
+        // 2. Reinstall the app
         install(ByteArray(0).inputStream()) // stream is ignored, uses System property
 
         logger.info("App state cleared for $id")

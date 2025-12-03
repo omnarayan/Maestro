@@ -106,6 +106,12 @@ class App {
 
     @Option(names = ["--verbose"], description = ["Enable verbose logging"])
     var verbose: Boolean = false
+
+    @Option(
+        names = ["--app-file"],
+        description = ["App binary (.apk, .app, or .ipa) for installation and clearState on real iOS devices"]
+    )
+    var appFile: java.io.File? = null
 }
 
 private fun printVersion() {
