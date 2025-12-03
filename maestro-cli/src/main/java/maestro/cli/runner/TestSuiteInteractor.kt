@@ -223,9 +223,10 @@ class TestSuiteInteractor(
                             it.error = e
                         }
                         stepReporter?.onCommandFailed(command.asCommand() ?: return@Orchestra Orchestra.ErrorResolution.FAIL)
-                        JsonReportGenerator.endCommand(CommandStatus.FAILED, e.message)
 
+                        // Take screenshot before endCommand (so it can be linked to current command)
                         ScreenshotUtils.takeDebugScreenshot(maestro, debugOutput, CommandStatus.FAILED)
+                        JsonReportGenerator.endCommand(CommandStatus.FAILED, e.message)
                         Orchestra.ErrorResolution.FAIL
                     },
                     onCommandSkipped = { _, command ->

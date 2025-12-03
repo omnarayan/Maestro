@@ -62,7 +62,6 @@ import maestro.cli.api.ApiClient
 import maestro.cli.auth.Auth
 import maestro.cli.model.FlowStatus
 import maestro.cli.view.cyan
-import maestro.cli.promotion.PromotionStateManager
 import maestro.orchestra.error.ValidationError
 import maestro.orchestra.workspace.WorkspaceExecutionPlanner
 import maestro.orchestra.workspace.WorkspaceExecutionPlanner.ExecutionPlan
@@ -294,6 +293,17 @@ class TestCommand : Callable<Int> {
         val platform = parent?.platform ?: "unknown"
         val deviceCount = getDeviceCount(executionPlan)
 
+        // DeviceLab disclaimer with colors
+        println()
+        println()
+        println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+        println("⚠️  Unofficial community build. Not affiliated with mobile.dev or Maestro.")
+        println("    Enhanced reporting by \u001B]8;;https://devicelab.dev\u0007\u001B[36mDeviceLab.dev\u001B[0m\u001B]8;;\u0007")
+        println("    With \u001B[31m❤️\u001B[0m by engineers who believe quality mobile testing shouldn't require enterprise budgets.")
+        println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+        println()
+        println()
+
         val result = try {
             handleSessions(debugOutputPath, executionPlan, resolvedTestOutputDir)
         } catch (e: Exception) {
@@ -433,11 +443,6 @@ class TestCommand : Callable<Int> {
         }
         message?.let { PrintUtils.info(it) }
 
-        // Show cloud promotion message if there are more than 5 tests (at most once per day)
-        if (flowCount > 5) {
-            showCloudFasterResultsPromotionMessageIfNeeded()
-        }
-
         val results = (0 until effectiveShards).map { shardIndex ->
             async(Dispatchers.IO + CoroutineName("shard-$shardIndex")) {
                 runShardSuite(
@@ -454,11 +459,6 @@ class TestCommand : Callable<Int> {
         val passed = results.sumOf { it.first ?: 0 }
         val total = results.sumOf { it.second ?: 0 }
         val suites = results.mapNotNull { it.third }
-
-        // Show cloud debug promotion message if there are failures
-        if (passed != total) {
-            showCloudDebugPromotionMessageIfNeeded()
-        }
 
         suites.mergeSummaries()?.saveReport()
 
@@ -704,55 +704,5 @@ class TestCommand : Callable<Int> {
             passedCount = sumOf { it.passedCount ?: 0 },
             totalTests = sumOf { it.totalTests ?: 0 }
         )
-    }
-
-    private fun showCloudFasterResultsPromotionMessageIfNeeded() {
-        // Don't show in CI environments
-        if (CiUtils.getCiProvider() != null) {
-            return
-        }
-        
-        val promotionStateManager = PromotionStateManager()
-        val today = LocalDate.now().toString()
-        
-        // Don't show if already shown today
-        if (promotionStateManager.getLastShownDate("fasterResults") == today) {
-            return
-        }
-        
-        // Don't show if user has used cloud command within last 3 days
-        if (promotionStateManager.wasCloudCommandUsedWithinDays(3)) {
-            return
-        }
-        
-        val command = "maestro cloud app_file flows_folder/"
-        val message = "Get results faster by ${"executing flows in parallel".cyan()} on Maestro Cloud virtual devices. Run: \n${command.green()}"
-        PrintUtils.info(message.greenBox())
-        promotionStateManager.setLastShownDate("fasterResults", today)
-    }
-
-    private fun showCloudDebugPromotionMessageIfNeeded() {
-        // Don't show in CI environments
-        if (CiUtils.getCiProvider() != null) {
-            return
-        }
-        
-        val promotionStateManager = PromotionStateManager()
-        val today = LocalDate.now().toString()
-
-        // Don't show if already shown today
-        if (promotionStateManager.getLastShownDate("debug") == today) {
-          return
-        }
-
-        // Don't show if user has used cloud command within last 3 days
-        if (promotionStateManager.wasCloudCommandUsedWithinDays(3)) {
-          return
-        }
-        
-        val command = "maestro cloud app_file flows_folder/"
-        val message = "Debug tests faster by easy access to ${"test recordings, maestro logs, screenshots, and more".cyan()}.\n\nRun your flows on Maestro Cloud:\n${command.green()}"
-        PrintUtils.info(message.greenBox())
-        promotionStateManager.setLastShownDate("debug", today)
     }
 }

@@ -223,7 +223,10 @@ object JsonReportGenerator {
         }
         command.endTime = now()
         command.error = errorMessage
-        command.screenshot = screenshot
+        // Only set screenshot if provided (don't override if already set by saveScreenshot)
+        if (screenshot != null) {
+            command.screenshot = screenshot
+        }
         command.durationMs = durationMs(command.startTime, command.endTime!!)
 
         // Mark flow as failed if command failed
@@ -268,64 +271,84 @@ object JsonReportGenerator {
         val report = currentReport ?: return null
         val dir = reportDir ?: return null
 
-        // Update summary
-        val flows = report.flows
-        val endTime = ZonedDateTime.now()
+        try {
+            // Update summary
+            val flows = report.flows
+            val endTime = ZonedDateTime.now()
 
-        report.summary = SummaryData(
-            totalFlows = flows.size,
-            passedFlows = flows.count { it.status == "passed" },
-            failedFlows = flows.count { it.status == "failed" },
-            skippedFlows = flows.count { it.status == "skipped" },
-            totalCommands = countFlowCommands(flows),
-            passedCommands = countFlowCommands(flows, "passed"),
-            failedCommands = countFlowCommands(flows, "failed"),
-            skippedCommands = countFlowCommands(flows, "skipped"),
-            totalDurationMs = startTime?.let { java.time.Duration.between(it, endTime).toMillis() } ?: 0,
-            startTime = startTime?.let { isoFormatter.format(it) },
-            endTime = isoFormatter.format(endTime)
-        )
+            report.summary = SummaryData(
+                totalFlows = flows.size,
+                passedFlows = flows.count { it.status == "passed" },
+                failedFlows = flows.count { it.status == "failed" },
+                skippedFlows = flows.count { it.status == "skipped" },
+                totalCommands = countFlowCommands(flows),
+                passedCommands = countFlowCommands(flows, "passed"),
+                failedCommands = countFlowCommands(flows, "failed"),
+                skippedCommands = countFlowCommands(flows, "skipped"),
+                totalDurationMs = startTime?.let { java.time.Duration.between(it, endTime).toMillis() } ?: 0,
+                startTime = startTime?.let { isoFormatter.format(it) },
+                endTime = isoFormatter.format(endTime)
+            )
 
-        val reportFile = dir.resolve("report.json").toFile()
-        mapper.writeValue(reportFile, report)
+            val reportFile = dir.resolve("report.json").toFile()
+            mapper.writeValue(reportFile, report)
 
-        // Generate other report formats
-        generateJUnitReport(report, dir)
-        generateHtmlReport(report, dir)
-        generateAllureResults(report, dir)
+            // Generate other report formats
+            generateJUnitReport(report, dir)
+            generateHtmlReport(report, dir)
+            generateAllureResults(report, dir)
 
-        return dir
+            return dir
+        } catch (e: Exception) {
+            System.err.println("Error saving report: ${e.message}")
+            e.printStackTrace()
+            return null
+        }
     }
 
     fun printReportPaths() {
         val dir = reportDir ?: return
-        val absPath = dir.toAbsolutePath()
+        val absPath = dir.toAbsolutePath().normalize()
+        println()
         println()
         println("Reports:")
         println("  HTML:   $absPath/index.html")
         println("  JSON:   $absPath/report.json")
         println("  JUnit:  $absPath/junit-report.xml")
         println("  Allure: $absPath/allure-results")
+        println()
+        println("(by \u001B]8;;https://devicelab.dev\u0007\u001B[36mDeviceLab.dev\u001B[0m\u001B]8;;\u0007 - Turn Your Devices Into a Distributed Device Lab)")
+        println()
+        println()
     }
 
     private fun generateJUnitReport(report: ReportData, dir: Path) {
         val s = report.summary
+        val d = report.device
         val xml = buildString {
             appendLine("""<?xml version="1.0" encoding="UTF-8"?>""")
-            appendLine("""<testsuites name="Maestro Tests" tests="${s.totalFlows}" failures="${s.failedFlows}" errors="0" skipped="${s.skippedFlows}" time="${s.totalDurationMs / 1000.0}">""")
+            appendLine("""<testsuites tests="${s.totalFlows}" failures="${s.failedFlows}" skipped="${s.skippedFlows}" errors="0" time="${s.totalDurationMs / 1000.0}">""")
+            appendLine("""  <testsuite name="Maestro Test Suite" tests="${s.totalFlows}" failures="${s.failedFlows}" skipped="${s.skippedFlows}" errors="0" time="${s.totalDurationMs / 1000.0}" timestamp="${s.startTime ?: ""}">""")
+            appendLine("""    <properties>""")
+            d?.let {
+                appendLine("""      <property name="device.name" value="${it.name.escapeXml()}"></property>""")
+                appendLine("""      <property name="device.platform" value="${it.platform.escapeXml()}"></property>""")
+                appendLine("""      <property name="device.osVersion" value="${it.osVersion.escapeXml()}"></property>""")
+            }
+            appendLine("""      <property name="framework" value="maestro"></property>""")
+            appendLine("""    </properties>""")
 
             for (flow in report.flows) {
                 val timeSec = flow.durationMs / 1000.0
                 val name = flow.name.escapeXml()
-                appendLine("""  <testsuite name="$name" tests="${countCommands(flow.commands)}" failures="${countCommands(flow.commands, "failed")}" errors="0" skipped="${countCommands(flow.commands, "skipped")}" time="$timeSec">""")
-                appendLine("""    <testcase name="$name" classname="maestro.flows" time="$timeSec">""")
+                append("""    <testcase name="$name" file="$name" time="$timeSec">""")
                 when (flow.status) {
-                    "failed" -> appendLine("""      <failure message="${(flow.error ?: "Test failed").escapeXml()}">${(flow.error ?: "").escapeXml()}</failure>""")
-                    "skipped" -> appendLine("""      <skipped/>""")
+                    "failed" -> appendLine("""<failure message="${(flow.error ?: "Test failed").escapeXml()}">${(flow.error ?: "").escapeXml()}</failure></testcase>""")
+                    "skipped" -> appendLine("""<skipped/></testcase>""")
+                    else -> appendLine("""</testcase>""")
                 }
-                appendLine("""    </testcase>""")
-                appendLine("""  </testsuite>""")
             }
+            appendLine("""  </testsuite>""")
             appendLine("""</testsuites>""")
         }
         dir.resolve("junit-report.xml").toFile().writeText(xml)
@@ -533,7 +556,7 @@ object JsonReportGenerator {
                 html += '<div class="steps">' + renderCommands(flow.commands) + '</div></div>';
             });
 
-            html += '<div class="footer">Generated by Maestro</div>';
+            html += '<div class="footer">Report built by <a href="https://devicelab.dev" target="_blank" style="color: var(--accent); text-decoration: none;">DeviceLab.dev</a><br>Made with ❤️ by engineers who believe quality mobile testing should not require enterprise budgets.</div>';
             document.getElementById('content').innerHTML = html;
         }
 
@@ -553,28 +576,128 @@ object JsonReportGenerator {
         val allureDir = dir.resolve("allure-results")
         Files.createDirectories(allureDir)
 
+        // Copy screenshots directly to allure-results (not in subfolder)
+        val srcScreenshots = dir.resolve("screenshots")
+        if (Files.exists(srcScreenshots)) {
+            Files.list(srcScreenshots).forEach { file ->
+                Files.copy(file, allureDir.resolve(file.fileName), java.nio.file.StandardCopyOption.REPLACE_EXISTING)
+            }
+        }
+
+        // Generate categories.json
+        val categories = """[
+  { "name": "Element Not Found", "matchedStatuses": ["failed"], "messageRegex": "(?i).*element not found.*" },
+  { "name": "Element Not Visible", "matchedStatuses": ["failed"], "messageRegex": "(?i).*not visible.*|.*not displayed.*" },
+  { "name": "Timeout", "matchedStatuses": ["failed"], "messageRegex": "(?i).*timeout.*|.*timed out.*" },
+  { "name": "Assertion Failed", "matchedStatuses": ["failed"], "messageRegex": "(?i).*assert.*" },
+  { "name": "App Launch Failed", "matchedStatuses": ["failed"], "messageRegex": "(?i).*launch.*failed.*|.*clearState.*|.*clear app.*|.*app.*crash.*" },
+  { "name": "Connection Error", "matchedStatuses": ["failed"], "messageRegex": "(?i).*connection.*|.*socket.*|.*network.*|.*ECONNREFUSED.*" },
+  { "name": "Script Error", "matchedStatuses": ["failed"], "messageRegex": "(?i).*script.*error.*|.*runScript.*|.*javascript.*" },
+  { "name": "Input Error", "matchedStatuses": ["failed"], "messageRegex": "(?i).*input.*|.*keyboard.*|.*sendKeys.*" }
+]"""
+        allureDir.resolve("categories.json").toFile().writeText(categories)
+
+        // Generate environment.properties
+        val envProps = buildString {
+            appendLine("framework=maestro")
+            report.device?.let {
+                appendLine("device.name=${it.name}")
+                appendLine("device.platform=${it.platform}")
+                appendLine("device.osVersion=${it.osVersion}")
+            }
+        }
+        allureDir.resolve("environment.properties").toFile().writeText(envProps)
+
+        // Generate executor.json
+        val executor = """{
+  "name": "DeviceLab",
+  "type": "devicelab",
+  "reportUrl": "https://devicelab.dev",
+  "reportName": "Powered by DeviceLab"
+}"""
+        allureDir.resolve("executor.json").toFile().writeText(executor)
+
+        // Generate flow results with nested steps
         for (flow in report.flows) {
+            val stepsJson = buildAllureSteps(flow.commands)
+            val tagsJson = flow.tags?.joinToString(",\n    ") { """{ "name": "tag", "value": "${it.escapeJson()}" }""" } ?: ""
+            val labelsJson = buildString {
+                if (tagsJson.isNotEmpty()) {
+                    append(tagsJson)
+                    append(",\n    ")
+                }
+                append("""{ "name": "framework", "value": "maestro" },
+    { "name": "severity", "value": "normal" }""")
+            }
+
             val result = buildString {
                 appendLine("""{""")
-                appendLine("""  "uuid": "${java.util.UUID.randomUUID()}",""")
-                appendLine("""  "historyId": "${flow.id}",""")
-                appendLine("""  "name": "${flow.name.replace("\"", "\\\"")}",""")
+                appendLine("""  "uuid": "${flow.id}",""")
+                appendLine("""  "historyId": "${flow.id.hashCode().toString(16)}",""")
+                appendLine("""  "fullName": "${flow.name.escapeJson()}",""")
+                appendLine("""  "name": "${flow.name.escapeJson()}",""")
+                appendLine("""  "labels": [""")
+                appendLine("    $labelsJson")
+                appendLine("""  ],""")
                 appendLine("""  "status": "${flow.status}",""")
                 appendLine("""  "stage": "finished",""")
                 appendLine("""  "start": ${parseTimestamp(flow.startTime)},""")
                 appendLine("""  "stop": ${parseTimestamp(flow.endTime)},""")
-                flow.error?.let { err ->
-                    appendLine("""  "statusDetails": { "message": "${err.replace("\"", "\\\"")}" },""")
+                if (stepsJson.isNotEmpty()) {
+                    appendLine("""  "steps": [$stepsJson""")
+                    appendLine("""  ]""")
+                } else {
+                    appendLine("""  "steps": []""")
                 }
-                appendLine("""  "labels": [""")
-                appendLine("""    { "name": "suite", "value": "Maestro Tests" },""")
-                appendLine("""    { "name": "framework", "value": "maestro" }""")
-                appendLine("""  ]""")
+                flow.error?.let { err ->
+                    append(""",
+  "statusDetails": { "message": "${err.escapeJson()}" }""")
+                }
+                appendLine()
                 appendLine("""}""")
             }
             allureDir.resolve("${flow.id}-result.json").toFile().writeText(result)
         }
     }
+
+    private fun buildAllureSteps(commands: List<CommandData>?, indent: String = "    "): String {
+        if (commands.isNullOrEmpty()) return ""
+        return commands.mapIndexed { idx, cmd ->
+            val nestedSteps = buildAllureSteps(cmd.commands, "$indent  ")
+            val hasNested = nestedSteps.isNotEmpty()
+            val hasScreenshot = cmd.screenshot != null
+            buildString {
+                appendLine()
+                append("$indent{")
+                appendLine()
+                appendLine("""$indent  "name": "${cmd.type}: ${cmd.description.escapeJson()}",""")
+                appendLine("""$indent  "status": "${cmd.status}",""")
+                appendLine("""$indent  "stage": "finished",""")
+                appendLine("""$indent  "start": ${parseTimestamp(cmd.startTime)},""")
+                append("""$indent  "stop": ${parseTimestamp(cmd.endTime)}""")
+                if (hasScreenshot) {
+                    // Remove "screenshots/" prefix for allure - files are copied directly to allure-results
+                    val screenshotFile = cmd.screenshot!!.removePrefix("screenshots/")
+                    appendLine(",")
+                    append("""$indent  "attachments": [{ "name": "Screenshot", "source": "$screenshotFile", "type": "image/png" }]""")
+                }
+                if (hasNested) {
+                    appendLine(",")
+                    appendLine("""$indent  "steps": [$nestedSteps""")
+                    append("""$indent  ]""")
+                }
+                appendLine()
+                append("$indent}")
+            }
+        }.joinToString(",")
+    }
+
+    private fun String.escapeJson() = this
+        .replace("\\", "\\\\")
+        .replace("\"", "\\\"")
+        .replace("\n", "\\n")
+        .replace("\r", "\\r")
+        .replace("\t", "\\t")
 
     private fun parseTimestamp(timestamp: String?): Long {
         if (timestamp == null) return System.currentTimeMillis()
