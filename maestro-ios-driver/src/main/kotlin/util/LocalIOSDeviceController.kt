@@ -9,6 +9,7 @@ import java.io.File
 import java.nio.file.Path
 import java.time.LocalDateTime
 import java.time.format.DateTimeFormatter
+import java.util.concurrent.TimeUnit
 
 object LocalIOSDeviceController {
 
@@ -61,7 +62,7 @@ object LocalIOSDeviceController {
         val pid = getProcessId(deviceId, bundleId)
         if (pid != null) {
             runCatching {
-                runCommand(
+                val process = ProcessBuilder(
                     listOf(
                         "xcrun",
                         "devicectl",
@@ -73,7 +74,13 @@ object LocalIOSDeviceController {
                         "--pid",
                         pid.toString()
                     )
-                )
+                ).redirectError(ProcessBuilder.Redirect.PIPE).start()
+
+                val completed = process.waitFor(10, TimeUnit.SECONDS)
+                if (!completed) {
+                    logger.warn("Timeout waiting for terminate command")
+                    process.destroyForcibly()
+                }
             }.onFailure {
                 logger.warn("Failed to terminate app $bundleId: ${it.message}")
             }
@@ -99,7 +106,13 @@ object LocalIOSDeviceController {
                     tempOutput.path
                 )
             ).redirectError(ProcessBuilder.Redirect.PIPE).start()
-            process.waitFor()
+
+            val completed = process.waitFor(10, TimeUnit.SECONDS)
+            if (!completed) {
+                logger.warn("Timeout waiting for process list from device $deviceId")
+                process.destroyForcibly()
+                return null
+            }
 
             val response = tempOutput.readText()
             val processResponse = jacksonObjectMapper().readValue<ProcessListResponse>(response)

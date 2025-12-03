@@ -35,6 +35,15 @@ tasks.named<Jar>("jar") {
             "maestro-driver-ios.xcodeproj/**",
         )
     }
+    // Include LICENSE and NOTICE files in META-INF for Apache 2.0 compliance
+    from("${rootProject.projectDir}/LICENSE") {
+        into("META-INF")
+        rename { "LICENSE" }
+    }
+    from("${rootProject.projectDir}/NOTICE") {
+        into("META-INF")
+        rename { "NOTICE" }
+    }
 }
 
 tasks.named<JavaExec>("run") {
@@ -254,6 +263,15 @@ tasks.named<Tar>("distTar") {
 
 tasks.shadowJar {
     setProperty("zip64", true)
+    // Include LICENSE and NOTICE files in META-INF for Apache 2.0 compliance
+    from("${rootProject.projectDir}/LICENSE") {
+        into("META-INF")
+        rename { "LICENSE" }
+    }
+    from("${rootProject.projectDir}/NOTICE") {
+        into("META-INF")
+        rename { "NOTICE" }
+    }
 }
 
 mavenPublishing {
