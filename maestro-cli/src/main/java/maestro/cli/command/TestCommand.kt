@@ -317,11 +317,9 @@ class TestCommand : Callable<Int> {
         // Flush analytics events immediately after tracking the upload finished event
         Analytics.flush()
 
-        // Save JSON report
-        val savedReportPath = JsonReportGenerator.save()
-        savedReportPath?.let {
-            PrintUtils.message("Report saved to: ${it.resolve("report.json")}")
-        }
+        // Save reports and print paths
+        JsonReportGenerator.save()
+        JsonReportGenerator.printReportPaths()
 
         return result
     }

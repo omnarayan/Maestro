@@ -3,6 +3,7 @@ package maestro.cli.util
 import java.io.File
 import maestro.Maestro
 import maestro.cli.report.FlowDebugOutput
+import maestro.cli.report.JsonReportGenerator
 import maestro.cli.runner.CommandStatus
 import okio.Buffer
 import okio.sink
@@ -29,6 +30,8 @@ object ScreenshotUtils {
                     status = status
                 )
             )
+            // Also save to report folder
+            JsonReportGenerator.saveScreenshot(out, status)
             out
         }
 
