@@ -39,12 +39,15 @@ import maestro.cli.analytics.WorkspaceRunStartedEvent
 import maestro.device.Device
 import maestro.device.DeviceService
 import maestro.cli.model.TestExecutionSummary
+import maestro.cli.report.JsonReportGenerator
 import maestro.cli.report.ReportFormat
 import maestro.cli.report.ReporterFactory
 import maestro.cli.report.TestDebugReporter
+import maestro.cli.runner.MochaStepReporter
 import maestro.cli.runner.TestRunner
 import maestro.cli.runner.TestSuiteInteractor
 import maestro.cli.runner.resultview.AnsiResultView
+import maestro.cli.runner.resultview.MochaResultView
 import maestro.cli.runner.resultview.PlainTextResultView
 import maestro.cli.session.MaestroSessionManager
 import maestro.cli.util.CiUtils
@@ -133,6 +136,12 @@ class TestCommand : Callable<Int> {
     private var format: ReportFormat = ReportFormat.NOOP
 
     @Option(
+        names = ["--reporter"],
+        description = ["Console reporter style: mocha (default), ansi, plain"],
+    )
+    private var reporter: String = "mocha"
+
+    @Option(
         names = ["--test-suite-name"],
         description = ["Test suite name"],
     )
@@ -158,6 +167,12 @@ class TestCommand : Callable<Int> {
         description = ["All file outputs from the test case are created in the folder without subfolders or timestamps for each run. It can be used with --debug-output. Useful for CI."]
     )
     private var flattenDebugOutput: Boolean = false
+
+    @Option(
+        names = ["--report-dir"],
+        description = ["Directory for JSON reports. Default: ./reports"]
+    )
+    private var reportDir: String? = null
 
     @Option(
         names = ["--include-tags"],
@@ -271,6 +286,9 @@ class TestCommand : Callable<Int> {
         TestDebugReporter.updateTestOutputDir(resolvedTestOutputDir)
         val debugOutputPath = TestDebugReporter.getDebugOutputPath()
 
+        // Initialize JSON report generator
+        JsonReportGenerator.init(reportDir)
+
         // Track test execution start
         val flowCount = executionPlan.flowsToRun.size
         val platform = parent?.platform ?: "unknown"
@@ -298,6 +316,12 @@ class TestCommand : Callable<Int> {
 
         // Flush analytics events immediately after tracking the upload finished event
         Analytics.flush()
+
+        // Save JSON report
+        val savedReportPath = JsonReportGenerator.save()
+        savedReportPath?.let {
+            PrintUtils.message("Report saved to: ${it.resolve("report.json")}")
+        }
 
         return result
     }
@@ -511,6 +535,16 @@ class TestCommand : Callable<Int> {
         } ?: error("No available ports found")
     }
 
+    private fun createResultView() = when (reporter.lowercase()) {
+        "mocha" -> MochaResultView()
+        "plain" -> PlainTextResultView()
+        else -> if (DisableAnsiMixin.ansiEnabled) {
+            AnsiResultView(useEmojis = !EnvUtils.isWindows())
+        } else {
+            PlainTextResultView()
+        }
+    }
+
     private fun runSingleFlow(
         maestro: Maestro,
         device: Device?,
@@ -518,17 +552,15 @@ class TestCommand : Callable<Int> {
         debugOutputPath: Path,
         testOutputDir: Path?,
     ): Triple<Int, Int, Nothing?> {
-        val resultView =
-            if (DisableAnsiMixin.ansiEnabled) {
-                AnsiResultView(useEmojis = !EnvUtils.isWindows())
-            } else {
-                PlainTextResultView()
-            }
+        val resultView = createResultView()
 
         val startTime = System.currentTimeMillis()
         Analytics.trackEvent(TestRunStartedEvent(
             platform = device?.platform.toString()
         ))
+
+        // Set device info for JSON report
+        JsonReportGenerator.setDevice(device)
 
         val resultSingle = TestRunner.runSingle(
             maestro = maestro,
@@ -580,11 +612,15 @@ class TestCommand : Callable<Int> {
             deviceCount = chunkPlans.size
         ))
 
+        // Set device info for JSON report
+        JsonReportGenerator.setDevice(device)
+
         val suiteResult = TestSuiteInteractor(
             maestro = maestro,
             device = device,
             shardIndex = if (chunkPlans.size == 1) null else shardIndex,
             reporter = ReporterFactory.buildReporter(format, testSuiteName),
+            stepReporter = if (reporter.lowercase() == "mocha") MochaStepReporter() else null,
         ).runTestSuite(
             executionPlan = chunkPlans[shardIndex],
             env = env,

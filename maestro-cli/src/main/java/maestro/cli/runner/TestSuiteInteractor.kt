@@ -10,6 +10,7 @@ import maestro.cli.report.SingleScreenFlowAIOutput
 import maestro.cli.report.CommandDebugMetadata
 import maestro.cli.report.FlowAIOutput
 import maestro.cli.report.FlowDebugOutput
+import maestro.cli.report.JsonReportGenerator
 import maestro.cli.report.TestDebugReporter
 import maestro.cli.report.TestSuiteReporter
 import maestro.cli.util.PrintUtils
@@ -43,6 +44,7 @@ class TestSuiteInteractor(
     private val device: Device? = null,
     private val reporter: TestSuiteReporter,
     private val shardIndex: Int? = null,
+    private val stepReporter: MochaStepReporter? = null,
 ) {
 
     private val logger = LoggerFactory.getLogger(TestSuiteInteractor::class.java)
@@ -61,7 +63,9 @@ class TestSuiteInteractor(
 
         val flowResults = mutableListOf<TestExecutionSummary.FlowResult>()
 
-        PrintUtils.message("${shardPrefix}Waiting for flows to complete...")
+        if (stepReporter == null) {
+            PrintUtils.message("${shardPrefix}Waiting for flows to complete...")
+        }
 
         var passed = true
         val aiOutputs = mutableListOf<FlowAIOutput>()
@@ -105,22 +109,26 @@ class TestSuiteInteractor(
 
         val suiteDuration = flowResults.sumOf { it.duration?.inWholeSeconds ?: 0 }.seconds
 
-        TestSuiteStatusView.showSuiteResult(
-            TestSuiteViewModel(
-                status = if (passed) FlowStatus.SUCCESS else FlowStatus.ERROR,
-                duration = suiteDuration,
-                shardIndex = shardIndex,
-                flows = flowResults
-                    .map {
-                        TestSuiteViewModel.FlowResult(
-                            name = it.name,
-                            status = it.status,
-                            duration = it.duration,
-                        )
-                    },
-            ),
-            uploadUrl = ""
-        )
+        if (stepReporter != null) {
+            stepReporter.printSummary()
+        } else {
+            TestSuiteStatusView.showSuiteResult(
+                TestSuiteViewModel(
+                    status = if (passed) FlowStatus.SUCCESS else FlowStatus.ERROR,
+                    duration = suiteDuration,
+                    shardIndex = shardIndex,
+                    flows = flowResults
+                        .map {
+                            TestSuiteViewModel.FlowResult(
+                                name = it.name,
+                                status = it.status,
+                                duration = it.duration,
+                            )
+                        },
+                ),
+                uploadUrl = ""
+            )
+        }
 
         val summary = TestExecutionSummary(
             passed = passed,
@@ -172,9 +180,14 @@ class TestSuiteInteractor(
             .readCommands(flowFile.toPath())
             .withEnv(env)
 
-        var flowName: String = YamlCommandReader.getConfig(commands)?.name ?: flowFile.nameWithoutExtension
+        val flowConfig = YamlCommandReader.getConfig(commands)
+        var flowName: String = flowConfig?.name ?: flowFile.nameWithoutExtension
+        val appId = flowConfig?.appId
+        val tags = flowConfig?.tags
 
         logger.info("$shardPrefix Running flow $flowName")
+        stepReporter?.onFlowStart(flowName)
+        JsonReportGenerator.startFlow(flowName, appId, tags)
 
         val flowTimeMillis = measureTimeMillis {
             try {
@@ -189,6 +202,8 @@ class TestSuiteInteractor(
                             timestamp = System.currentTimeMillis(),
                             status = CommandStatus.RUNNING
                         )
+                        stepReporter?.onCommandStart(command.asCommand() ?: return@Orchestra)
+                        JsonReportGenerator.startCommand(command)
                     },
                     onCommandComplete = { _, command ->
                         logger.info("${shardPrefix}${command.description()} COMPLETED")
@@ -196,6 +211,8 @@ class TestSuiteInteractor(
                             it.status = CommandStatus.COMPLETED
                             it.calculateDuration()
                         }
+                        stepReporter?.onCommandComplete(command.asCommand() ?: return@Orchestra)
+                        JsonReportGenerator.endCommand(CommandStatus.COMPLETED)
                     },
                     onCommandFailed = { _, command, e ->
                         logger.info("${shardPrefix}${command.description()} FAILED")
@@ -205,6 +222,8 @@ class TestSuiteInteractor(
                             it.calculateDuration()
                             it.error = e
                         }
+                        stepReporter?.onCommandFailed(command.asCommand() ?: return@Orchestra Orchestra.ErrorResolution.FAIL)
+                        JsonReportGenerator.endCommand(CommandStatus.FAILED, e.message)
 
                         ScreenshotUtils.takeDebugScreenshot(maestro, debugOutput, CommandStatus.FAILED)
                         Orchestra.ErrorResolution.FAIL
@@ -214,12 +233,16 @@ class TestSuiteInteractor(
                         debugOutput.commands[command]?.let {
                             it.status = CommandStatus.SKIPPED
                         }
+                        stepReporter?.onCommandSkipped(command.asCommand() ?: return@Orchestra)
+                        JsonReportGenerator.endCommand(CommandStatus.SKIPPED)
                     },
                     onCommandWarned = { _, command ->
                         logger.info("${shardPrefix}${command.description()} WARNED")
                         debugOutput.commands[command]?.apply {
                             status = CommandStatus.WARNED
                         }
+                        stepReporter?.onCommandWarned(command.asCommand() ?: return@Orchestra)
+                        JsonReportGenerator.endCommand(CommandStatus.WARNED)
                     },
                     onCommandReset = { command ->
                         logger.info("${shardPrefix}${command.description()} PENDING")
@@ -257,15 +280,29 @@ class TestSuiteInteractor(
         )
         // FIXME(bartekpacia): Save AI output as well
 
-        TestSuiteStatusView.showFlowCompletion(
-            TestSuiteViewModel.FlowResult(
-                name = flowName,
-                status = flowStatus,
+        // Report flow completion
+        val flowPassed = flowStatus == FlowStatus.SUCCESS
+        val flowError = errorMessage ?: debugOutput.exception?.message
+        JsonReportGenerator.endFlow(flowPassed, flowError)
+
+        if (stepReporter != null) {
+            stepReporter.onFlowComplete(
+                flowName = flowName,
+                passed = flowPassed,
                 duration = flowDuration,
-                shardIndex = shardIndex,
-                error = debugOutput.exception?.message,
+                errorMessage = flowError
             )
-        )
+        } else {
+            TestSuiteStatusView.showFlowCompletion(
+                TestSuiteViewModel.FlowResult(
+                    name = flowName,
+                    status = flowStatus,
+                    duration = flowDuration,
+                    shardIndex = shardIndex,
+                    error = debugOutput.exception?.message,
+                )
+            )
+        }
 
         return Pair(
             first = TestExecutionSummary.FlowResult(

@@ -12,6 +12,7 @@ import maestro.MaestroException
 import maestro.device.Device
 import maestro.cli.report.FlowAIOutput
 import maestro.cli.report.FlowDebugOutput
+import maestro.cli.report.JsonReportGenerator
 import maestro.cli.report.TestDebugReporter
 import maestro.cli.runner.resultview.AnsiResultView
 import maestro.cli.runner.resultview.ResultView
@@ -87,6 +88,9 @@ object TestRunner {
             }
         }
 
+        val passed = result.get() == true
+        val duration = System.currentTimeMillis() - (debugOutput.commands.values.firstOrNull()?.timestamp ?: System.currentTimeMillis())
+
         TestDebugReporter.saveFlow(
             flowName = flowFile.name,
             debugOutput = debugOutput,
@@ -98,6 +102,7 @@ object TestRunner {
         )
 
         val exception = debugOutput.exception
+        resultView.close(passed, duration, exception?.message)
         if (exception != null) {
             PrintUtils.err(exception.message)
             if (exception is MaestroException.AssertionFailure) {
@@ -110,7 +115,7 @@ object TestRunner {
             }
         }
 
-        return if (result.get() == true) 0 else 1
+        return if (passed) 0 else 1
     }
 
     /**

@@ -26,6 +26,7 @@ import maestro.cli.report.SingleScreenFlowAIOutput
 import maestro.cli.report.CommandDebugMetadata
 import maestro.cli.report.FlowAIOutput
 import maestro.cli.report.FlowDebugOutput
+import maestro.cli.report.JsonReportGenerator
 import maestro.cli.runner.resultview.ResultView
 import maestro.cli.runner.resultview.UiState
 import maestro.cli.util.PrintUtils
@@ -67,6 +68,9 @@ object MaestroCommandRunner {
         val config = YamlCommandReader.getConfig(commands)
         val onFlowComplete = config?.onFlowComplete
         val onFlowStart = config?.onFlowStart
+
+        // Start flow tracking for JSON report
+        JsonReportGenerator.startFlow(flowName, config?.appId, config?.tags)
 
         val commandStatuses = IdentityHashMap<MaestroCommand, CommandStatus>()
         val commandMetadata = IdentityHashMap<MaestroCommand, Orchestra.CommandMetadata>()
@@ -112,6 +116,7 @@ object MaestroCommandRunner {
                     timestamp = System.currentTimeMillis(),
                     status = CommandStatus.RUNNING
                 )
+                JsonReportGenerator.startCommand(command)
 
                 refreshUi()
             },
@@ -126,6 +131,7 @@ object MaestroCommandRunner {
                     status = CommandStatus.COMPLETED
                     calculateDuration()
                 }
+                JsonReportGenerator.endCommand(CommandStatus.COMPLETED)
                 refreshUi()
             },
             onCommandFailed = { _, command, e ->
@@ -145,6 +151,7 @@ object MaestroCommandRunner {
 
                 logger.info("${command.description()} FAILED")
                 commandStatuses[command] = CommandStatus.FAILED
+                JsonReportGenerator.endCommand(CommandStatus.FAILED, e.message)
                 refreshUi()
                 Orchestra.ErrorResolution.FAIL
             },
@@ -154,6 +161,7 @@ object MaestroCommandRunner {
                 debugOutput.commands[command]?.apply {
                     status = CommandStatus.SKIPPED
                 }
+                JsonReportGenerator.endCommand(CommandStatus.SKIPPED)
                 refreshUi()
             },
             onCommandWarned = { _, command ->
@@ -162,6 +170,7 @@ object MaestroCommandRunner {
                 debugOutput.commands[command]?.apply {
                     status = CommandStatus.WARNED
                 }
+                JsonReportGenerator.endCommand(CommandStatus.WARNED)
 
                 ScreenshotUtils.takeDebugScreenshot(maestro, debugOutput, CommandStatus.WARNED)
 
@@ -195,11 +204,14 @@ object MaestroCommandRunner {
 
         val flowSuccess = orchestra.runFlow(commands)
 
+        // End flow tracking for JSON report
+        JsonReportGenerator.endFlow(flowSuccess, debugOutput.exception?.message)
+
         // Warn users about deprecated Rhino JS engine
         val isRhinoExplicitlyRequested = config?.ext?.get("jsEngine") == "rhino"
         if (isRhinoExplicitlyRequested) {
           PrintUtils.warn("⚠️  The Rhino JS engine (jsEngine: rhino) is deprecated and will be removed in a future version. Please migrate to GraalJS (the default) for better performance and compatibility. This warning will be removed in a future version.")
-        }        
+        }
 
         return flowSuccess
     }
