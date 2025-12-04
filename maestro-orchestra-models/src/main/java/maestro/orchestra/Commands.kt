@@ -744,10 +744,11 @@ data class RunFlowCommand(
 
     override val originalDescription: String
         get() {
-            val runDescription = if (sourceDescription != null) {
-                "Run $sourceDescription"
-            } else {
-                "Run flow"
+            val runDescription = when {
+                config?.name != null && sourceDescription != null -> "Run ${config.name} ($sourceDescription)"
+                config?.name != null -> "Run ${config.name}"
+                sourceDescription != null -> "Run $sourceDescription"
+                else -> "Run flow"
             }
 
             return if (condition == null) {
