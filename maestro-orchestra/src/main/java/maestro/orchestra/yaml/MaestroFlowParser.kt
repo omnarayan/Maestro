@@ -45,6 +45,7 @@ import java.nio.file.Paths
 import kotlin.io.path.absolute
 import kotlin.io.path.isDirectory
 import kotlin.io.path.readText
+import kotlin.reflect.KParameter
 import kotlin.reflect.full.primaryConstructor
 import kotlin.reflect.jvm.javaType
 
@@ -373,32 +374,49 @@ private object YamlCommandDeserializer : JsonDeserializer<YamlFluentCommand>() {
         }
         val commandType = (parser.codec as ObjectMapper).constructType(commandParameter.type.javaType)
         val command = parser.codec.readValue<Any>(parser, commandType)
-        val fluentCommand = yamlFluentCommandConstructor.callBy(mapOf(
+        // Build parameters map for the fluent command
+        val parametersMap = mutableMapOf<KParameter, Any?>(
             yamlFluentCommandLocationParameter to commandLocation,
             commandParameter to command,
-        ))
+        )
 
-        val nextToken = parser.nextToken()
-        if (nextToken == JsonToken.END_OBJECT) return fluentCommand
+        var nextToken = parser.nextToken()
 
-        if (nextToken == JsonToken.FIELD_NAME) {
+        // Handle commands that can have sibling fields (like 'it' with 'steps')
+        while (nextToken == JsonToken.FIELD_NAME) {
             val fieldName = parser.currentName()
-            throw ParseException(
-                location = parser.currentLocation(),
-                title = "Invalid Command Format: $commandName",
-                errorMessage = """
-                    |Found unexpected top-level field: `$fieldName`. Missing an indent or dash?
-                    |
-                    |Example of correctly formatted list of commands:
-                    |```yaml
-                    |- tapOn:
-                    |    text: submit
-                    |    optional: true
-                    |- inputText: hello
-                    |```
-                """.trimMargin("|"),
-            )
+            val siblingParameter = yamlFluentCommandParameters.firstOrNull { it.name == fieldName }
+
+            if (siblingParameter != null) {
+                // Read the sibling field value
+                parser.nextToken()
+                val siblingType = (parser.codec as ObjectMapper).constructType(siblingParameter.type.javaType)
+                val siblingValue = parser.codec.readValue<Any>(parser, siblingType)
+                parametersMap[siblingParameter] = siblingValue
+                nextToken = parser.nextToken()
+            } else {
+                // Unknown field - throw error
+                throw ParseException(
+                    location = parser.currentLocation(),
+                    title = "Invalid Command Format: $commandName",
+                    errorMessage = """
+                        |Found unexpected top-level field: `$fieldName`. Missing an indent or dash?
+                        |
+                        |Example of correctly formatted list of commands:
+                        |```yaml
+                        |- tapOn:
+                        |    text: submit
+                        |    optional: true
+                        |- inputText: hello
+                        |```
+                    """.trimMargin("|"),
+                )
+            }
         }
+
+        val fluentCommand = yamlFluentCommandConstructor.callBy(parametersMap)
+
+        if (nextToken == JsonToken.END_OBJECT) return fluentCommand
         throw ParseException(
             location = commandLocation,
             title = "Invalid Command Format: $commandName",

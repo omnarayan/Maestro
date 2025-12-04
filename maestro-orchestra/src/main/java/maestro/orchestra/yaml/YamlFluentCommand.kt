@@ -70,6 +70,8 @@ import maestro.orchestra.TapOnPointV2Command
 import maestro.orchestra.ToggleAirplaneModeCommand
 import maestro.orchestra.TravelCommand
 import maestro.orchestra.WaitForAnimationToEndCommand
+import maestro.orchestra.DescribeCommand
+import maestro.orchestra.TestCaseCommand
 import maestro.orchestra.error.InvalidFlowFile
 import maestro.orchestra.error.MediaFileNotFound
 import maestro.orchestra.error.SyntaxError
@@ -136,6 +138,9 @@ data class YamlFluentCommand(
     val setAirplaneMode: YamlSetAirplaneMode? = null,
     val toggleAirplaneMode: YamlToggleAirplaneMode? = null,
     val retry: YamlRetryCommand? = null,
+    val describe: String? = null,
+    val `it`: String? = null,
+    val steps: List<YamlFluentCommand>? = null,
     @JsonIgnore val _location: JsonLocation,
 ) {
 
@@ -447,6 +452,23 @@ data class YamlFluentCommand(
                     ToggleAirplaneModeCommand(
                         toggleAirplaneMode.label,
                         toggleAirplaneMode.optional
+                    )
+                )
+            )
+
+            describe != null -> listOf(
+                MaestroCommand(
+                    DescribeCommand(
+                        description = describe,
+                    )
+                )
+            )
+
+            `it` != null && steps != null -> listOf(
+                MaestroCommand(
+                    TestCaseCommand(
+                        testName = `it`,
+                        steps = steps.flatMap { step -> step.toCommands(flowPath, appId) },
                     )
                 )
             )

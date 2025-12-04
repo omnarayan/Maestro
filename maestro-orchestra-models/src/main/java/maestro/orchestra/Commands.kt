@@ -1092,6 +1092,55 @@ data class ToggleAirplaneModeCommand(
     }
 }
 
+/**
+ * DescribeCommand represents a test suite marker.
+ * It groups related test cases (TestCaseCommand) together for reporting.
+ * This command doesn't perform any action - it's purely for organization and reporting.
+ */
+data class DescribeCommand(
+    val description: String,
+    override val label: String? = null,
+    override val optional: Boolean = false,
+) : Command {
+    override val originalDescription: String
+        get() = "Suite: $description"
+
+    override fun evaluateScripts(jsEngine: JsEngine): Command {
+        return this
+    }
+
+    override fun visible(): Boolean = true
+}
+
+/**
+ * TestCaseCommand represents a single test case containing multiple steps.
+ * This is similar to Cypress's `it()` block.
+ */
+data class TestCaseCommand(
+    val testName: String,
+    val steps: List<MaestroCommand>,
+    override val label: String? = null,
+    override val optional: Boolean = false,
+) : CompositeCommand {
+
+    override fun subCommands(): List<MaestroCommand> {
+        return steps
+    }
+
+    override fun config(): MaestroConfig? {
+        return null
+    }
+
+    override val originalDescription: String
+        get() = "Test: $testName"
+
+    override fun evaluateScripts(jsEngine: JsEngine): Command {
+        return copy(
+            label = label?.evaluateScripts(jsEngine)
+        )
+    }
+}
+
 internal fun tapOnDescription(isLongPress: Boolean?, repeat: TapRepeat?): String {
     return if (isLongPress == true) "Long press"
     else if (repeat != null) {

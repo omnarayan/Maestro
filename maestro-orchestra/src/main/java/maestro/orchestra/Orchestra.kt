@@ -368,6 +368,8 @@ class Orchestra(
             is SetAirplaneModeCommand -> setAirplaneMode(command)
             is ToggleAirplaneModeCommand -> toggleAirplaneMode()
             is RetryCommand -> retryCommand(command, config)
+            is DescribeCommand -> describeCommand(command)
+            is TestCaseCommand -> testCaseCommand(command, config)
             else -> true
         }.also { mutating ->
             if (mutating) {
@@ -744,6 +746,25 @@ class Orchestra(
         }
 
         return false
+    }
+
+    /**
+     * DescribeCommand is a suite marker - it doesn't perform any action.
+     * It's used for organizing and reporting test suites.
+     */
+    private fun describeCommand(command: DescribeCommand): Boolean {
+        // No action needed - this is a marker for reporting
+        logger.info("Starting suite: ${command.description}")
+        return false // Does not mutate UI state
+    }
+
+    /**
+     * TestCaseCommand executes the contained commands as a test case.
+     * This is similar to how RepeatCommand works with its subCommands.
+     */
+    private suspend fun testCaseCommand(command: TestCaseCommand, config: MaestroConfig?): Boolean {
+        logger.info("Running test case: ${command.testName}")
+        return runSubFlow(command.steps, config, null)
     }
 
     private fun updateMetadata(rawCommand: MaestroCommand, metadata: CommandMetadata) {

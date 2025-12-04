@@ -207,6 +207,11 @@ object MaestroCommandRunner {
         // End flow tracking for JSON report
         JsonReportGenerator.endFlow(flowSuccess, debugOutput.exception?.message)
 
+        // Print hierarchical test summary if describe/it commands are used
+        TestHierarchySummary.buildResults(flowName, commands, commandStatuses)?.let { suites ->
+            TestHierarchySummary.printSummary(flowName, suites)
+        }
+
         // Warn users about deprecated Rhino JS engine
         val isRhinoExplicitlyRequested = config?.ext?.get("jsEngine") == "rhino"
         if (isRhinoExplicitlyRequested) {
