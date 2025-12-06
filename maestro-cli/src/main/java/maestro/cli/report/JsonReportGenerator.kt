@@ -66,11 +66,16 @@ object JsonReportGenerator {
 
     fun setDevice(device: Device?) {
         device?.let {
-            val deviceName = when (it) {
+            val deviceId = when (it) {
                 is Device.Connected -> it.instanceId
                 is Device.AvailableForLaunch -> it.modelId
             }
+            val deviceName = when (it) {
+                is Device.Connected -> it.description
+                is Device.AvailableForLaunch -> it.description
+            }
             currentReport?.device = DeviceData(
+                id = deviceId,
                 name = deviceName,
                 platform = it.platform.toString().lowercase(),
                 osVersion = "unknown" // OS version not available in Device
@@ -78,7 +83,7 @@ object JsonReportGenerator {
         }
     }
 
-    fun startFlow(name: String, appId: String?, tags: List<String>?) {
+    fun startFlow(name: String, appId: String?, tags: List<String>?, fileName: String? = null) {
         flowCounter++
         commandCounters.clear()
         commandCounters.add(0) // Start with depth 0
@@ -86,6 +91,7 @@ object JsonReportGenerator {
         currentFlow = FlowData(
             id = "flow_%03d".format(flowCounter),
             name = name,
+            fileName = fileName,
             appId = appId,
             tags = tags,
             status = "passed",
@@ -105,7 +111,7 @@ object JsonReportGenerator {
             flow.durationMs = durationMs(flow.startTime, flow.endTime!!)
 
             // Build suite/test structure from commands
-            flow.suites = buildSuiteStructure(flow.commands, flow.name)
+            flow.suites = buildSuiteStructure(flow.commands, flow.fileName ?: flow.name)
 
             (currentReport?.flows as MutableList).add(flow)
         }
@@ -477,26 +483,26 @@ object JsonReportGenerator {
                     val suiteName = suite.suite.escapeXml()
 
                     appendLine("""  <testsuite name="$suiteName" tests="$suiteTests" failures="$suiteFailed" skipped="$suiteSkipped" errors="0" time="$suiteTime" timestamp="${s.startTime ?: ""}">""")
-                    appendLine("""    <properties>""")
-                    d?.let {
-                        appendLine("""      <property name="device.name" value="${it.name.escapeXml()}"></property>""")
-                        appendLine("""      <property name="device.platform" value="${it.platform.escapeXml()}"></property>""")
-                        appendLine("""      <property name="device.osVersion" value="${it.osVersion.escapeXml()}"></property>""")
-                    }
-                    appendLine("""      <property name="framework" value="maestro"></property>""")
-                    appendLine("""    </properties>""")
 
                     for (test in suite.tests) {
                         val testName = test.test.escapeXml()
                         val testFile = (test.file ?: "unknown").escapeXml()
                         val testTime = test.durationMs / 1000.0
 
-                        append("""    <testcase name="$testName" classname="$testFile" time="$testTime">""")
-                        when (test.status) {
-                            "failed" -> appendLine("""<failure message="${(test.error ?: "Test failed").escapeXml()}">${(test.error ?: "").escapeXml()}</failure></testcase>""")
-                            "skipped" -> appendLine("""<skipped/></testcase>""")
-                            else -> appendLine("""</testcase>""")
+                        appendLine("""    <testcase name="$testName" classname="$testFile" time="$testTime">""")
+                        appendLine("""      <properties>""")
+                        appendLine("""        <property name="file" value="$testFile"/>""")
+                        d?.let {
+                            appendLine("""        <property name="device.name" value="${it.name.escapeXml()}"/>""")
+                            appendLine("""        <property name="device.id" value="${it.id?.escapeXml() ?: ""}"/>""")
+                            appendLine("""        <property name="device.platform" value="${it.platform.escapeXml()}"/>""")
                         }
+                        appendLine("""      </properties>""")
+                        when (test.status) {
+                            "failed" -> appendLine("""      <failure message="${(test.error ?: "Test failed").escapeXml()}">${(test.error ?: "").escapeXml()}</failure>""")
+                            "skipped" -> appendLine("""      <skipped/>""")
+                        }
+                        appendLine("""    </testcase>""")
                     }
                     appendLine("""  </testsuite>""")
                 }
@@ -505,24 +511,25 @@ object JsonReportGenerator {
                 // Fallback to flow-based structure
                 appendLine("""<testsuites tests="${s.totalFlows}" failures="${s.failedFlows}" skipped="${s.skippedFlows}" errors="0" time="${s.totalDurationMs / 1000.0}">""")
                 appendLine("""  <testsuite name="Maestro Test Suite" tests="${s.totalFlows}" failures="${s.failedFlows}" skipped="${s.skippedFlows}" errors="0" time="${s.totalDurationMs / 1000.0}" timestamp="${s.startTime ?: ""}">""")
-                appendLine("""    <properties>""")
-                d?.let {
-                    appendLine("""      <property name="device.name" value="${it.name.escapeXml()}"></property>""")
-                    appendLine("""      <property name="device.platform" value="${it.platform.escapeXml()}"></property>""")
-                    appendLine("""      <property name="device.osVersion" value="${it.osVersion.escapeXml()}"></property>""")
-                }
-                appendLine("""      <property name="framework" value="maestro"></property>""")
-                appendLine("""    </properties>""")
 
                 for (flow in report.flows) {
                     val timeSec = flow.durationMs / 1000.0
                     val name = flow.name.escapeXml()
-                    append("""    <testcase name="$name" classname="$name" time="$timeSec">""")
-                    when (flow.status) {
-                        "failed" -> appendLine("""<failure message="${(flow.error ?: "Test failed").escapeXml()}">${(flow.error ?: "").escapeXml()}</failure></testcase>""")
-                        "skipped" -> appendLine("""<skipped/></testcase>""")
-                        else -> appendLine("""</testcase>""")
+                    val fileName = (flow.fileName ?: flow.name).escapeXml()
+                    appendLine("""    <testcase name="$name" classname="$name" time="$timeSec">""")
+                    appendLine("""      <properties>""")
+                    appendLine("""        <property name="file" value="$fileName"/>""")
+                    d?.let {
+                        appendLine("""        <property name="device.name" value="${it.name.escapeXml()}"/>""")
+                        appendLine("""        <property name="device.id" value="${it.id?.escapeXml() ?: ""}"/>""")
+                        appendLine("""        <property name="device.platform" value="${it.platform.escapeXml()}"/>""")
                     }
+                    appendLine("""      </properties>""")
+                    when (flow.status) {
+                        "failed" -> appendLine("""      <failure message="${(flow.error ?: "Test failed").escapeXml()}">${(flow.error ?: "").escapeXml()}</failure>""")
+                        "skipped" -> appendLine("""      <skipped/>""")
+                    }
+                    appendLine("""    </testcase>""")
                 }
                 appendLine("""  </testsuite>""")
                 appendLine("""</testsuites>""")
@@ -1222,6 +1229,7 @@ data class SummaryData(
 )
 
 data class DeviceData(
+    val id: String? = null,
     val name: String,
     val platform: String,
     val osVersion: String
@@ -1230,6 +1238,7 @@ data class DeviceData(
 data class FlowData(
     val id: String,
     val name: String,
+    val fileName: String? = null,
     val appId: String?,
     val tags: List<String>?,
     var status: String,

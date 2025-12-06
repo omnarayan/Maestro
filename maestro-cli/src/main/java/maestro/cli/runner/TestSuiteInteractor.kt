@@ -194,7 +194,7 @@ class TestSuiteInteractor(
 
         logger.info("$shardPrefix Running flow $displayName")
         stepReporter?.onFlowStart(displayName, flowName)
-        JsonReportGenerator.startFlow(flowName, appId, tags)
+        JsonReportGenerator.startFlow(flowName, appId, tags, flowFile.name)
 
         val flowTimeMillis = measureTimeMillis {
             try {
