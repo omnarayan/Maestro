@@ -185,8 +185,15 @@ class TestSuiteInteractor(
         val appId = flowConfig?.appId
         val tags = flowConfig?.tags
 
-        logger.info("$shardPrefix Running flow $flowName")
-        stepReporter?.onFlowStart(flowName)
+        // Display name includes file path for clarity during execution
+        val displayName = if (flowConfig?.name != null) {
+            "${flowConfig.name} (${flowFile.name})"
+        } else {
+            flowFile.name
+        }
+
+        logger.info("$shardPrefix Running flow $displayName")
+        stepReporter?.onFlowStart(displayName, flowName)
         JsonReportGenerator.startFlow(flowName, appId, tags)
 
         val flowTimeMillis = measureTimeMillis {
@@ -288,7 +295,7 @@ class TestSuiteInteractor(
 
         if (stepReporter != null) {
             stepReporter.onFlowComplete(
-                flowName = flowName,
+                flowName = displayName,
                 passed = flowPassed,
                 duration = flowDuration,
                 errorMessage = flowError
@@ -296,7 +303,7 @@ class TestSuiteInteractor(
         } else {
             TestSuiteStatusView.showFlowCompletion(
                 TestSuiteViewModel.FlowResult(
-                    name = flowName,
+                    name = displayName,
                     status = flowStatus,
                     duration = flowDuration,
                     shardIndex = shardIndex,

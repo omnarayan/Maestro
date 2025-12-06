@@ -222,8 +222,6 @@ class Orchestra(
                 // Check for pause before executing each command
                 flowController.waitIfPaused()
 
-                onCommandStart(index, command)
-
                 jsEngine.onLogMessage { msg ->
                     val metadata = getMetadata(command)
                     updateMetadata(
@@ -233,12 +231,16 @@ class Orchestra(
                     logger.info("JsConsole: $msg")
                 }
 
+                // Evaluate scripts first so callbacks receive resolved values (e.g., ${username} -> actual value)
                 val evaluatedCommand = command.evaluateScripts(jsEngine)
                 val metadata = getMetadata(command)
                     .copy(
                         evaluatedCommand = evaluatedCommand,
                     )
                 updateMetadata(command, metadata)
+
+                // Now notify start with evaluated command
+                onCommandStart(index, evaluatedCommand)
 
                 val callback: (Insight) -> Unit = { insight ->
                     updateMetadata(
@@ -253,7 +255,7 @@ class Orchestra(
                 try {
                     try {
                         executeCommand(evaluatedCommand, config)
-                        onCommandComplete(index, command)
+                        onCommandComplete(index, evaluatedCommand)
                     } catch (e: MaestroException) {
                         val isOptional =
                             command.asCommand()?.optional == true || command.elementSelector()?.optional == true
@@ -264,14 +266,14 @@ class Orchestra(
                     logger.info("[Command execution] CommandWarned: ${ignored.message}")
                     // Swallow exception, but add a warning as an insight
                     insights.report(Insight(message = ignored.message, level = Insight.Level.WARNING))
-                    onCommandWarned(index, command)
+                    onCommandWarned(index, evaluatedCommand)
                 } catch (ignored: CommandSkipped) {
                     logger.info("[Command execution] CommandSkipped: ${ignored.message}")
                     // Swallow exception
-                    onCommandSkipped(index, command)
+                    onCommandSkipped(index, evaluatedCommand)
                 } catch (e: Throwable) {
                     logger.error("[Command execution] CommandFailed: ${e.message}")
-                    val errorResolution = onCommandFailed(index, command, e)
+                    val errorResolution = onCommandFailed(index, evaluatedCommand, e)
                     when (errorResolution) {
                         ErrorResolution.FAIL -> return false
                         ErrorResolution.CONTINUE -> {} // Do nothing
@@ -878,8 +880,7 @@ class Orchestra(
         return try {
             commands
                 .mapIndexed { index, command ->
-                    onCommandStart(index, command)
-
+                    // Evaluate scripts first so callbacks receive resolved values (e.g., ${username} -> actual value)
                     val evaluatedCommand = command.evaluateScripts(jsEngine)
                     val metadata = getMetadata(command)
                         .copy(
@@ -887,11 +888,14 @@ class Orchestra(
                         )
                     updateMetadata(command, metadata)
 
+                    // Now notify start with evaluated command
+                    onCommandStart(index, evaluatedCommand)
+
                     return@mapIndexed try {
                         try {
                             executeCommand(evaluatedCommand, config)
                                 .also {
-                                    onCommandComplete(index, command)
+                                    onCommandComplete(index, evaluatedCommand)
                                 }
                         } catch (exception: MaestroException) {
                             val isOptional =
@@ -903,15 +907,15 @@ class Orchestra(
                         // Swallow exception, but add a warning as an insight
                         logger.info("[Command execution subflow] CommandWarned: ${ignored.message}")
                         insights.report(Insight(message = ignored.message, level = Insight.Level.WARNING))
-                        onCommandWarned(index, command)
+                        onCommandWarned(index, evaluatedCommand)
                         false
                     } catch (ignored: CommandSkipped) {
                         // Swallow exception
                         logger.info("[Command execution subflow] CommandSkipped: ${ignored.message}")
-                        onCommandSkipped(index, command)
+                        onCommandSkipped(index, evaluatedCommand)
                         false
                     } catch (e: Throwable) {
-                        when (onCommandFailed(index, command, e)) {
+                        when (onCommandFailed(index, evaluatedCommand, e)) {
                             ErrorResolution.FAIL -> throw e
                             ErrorResolution.CONTINUE -> {
                                 // Do nothing

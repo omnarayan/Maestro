@@ -103,10 +103,135 @@ object JsonReportGenerator {
             flow.endTime = now()
             flow.error = errorMessage
             flow.durationMs = durationMs(flow.startTime, flow.endTime!!)
+
+            // Build suite/test structure from commands
+            flow.suites = buildSuiteStructure(flow.commands, flow.name)
+
             (currentReport?.flows as MutableList).add(flow)
         }
         currentFlow = null
         commandStack.clear()
+    }
+
+    /**
+     * Builds hierarchical suite/test structure from command list.
+     * Recursively searches through nested commands (runFlow) to find suite/test.
+     * Returns null if no suite/test commands are found.
+     * Each test includes the file name for tracking.
+     */
+    private fun buildSuiteStructure(commands: List<CommandData>, flowName: String): MutableList<SuiteData>? {
+        val suites = mutableListOf<SuiteData>()
+        var currentSuite: SuiteData? = null
+        var hasSuiteOrTest = false
+
+        // Recursively process commands to find suite/test
+        fun processCommands(cmds: List<CommandData>, currentFileName: String) {
+            for (cmd in cmds) {
+                when (cmd.type) {
+                    "suite" -> {
+                        hasSuiteOrTest = true
+                        // Extract suite name from description (format: "Suite: Name")
+                        val suiteName = cmd.description.removePrefix("Suite: ")
+                        currentSuite = SuiteData(
+                            suite = suiteName,
+                            status = cmd.status,
+                            durationMs = cmd.durationMs
+                        )
+                        suites.add(currentSuite!!)
+                    }
+                    "test" -> {
+                        hasSuiteOrTest = true
+                        // Extract test name from description (format: "Test: Name")
+                        val testName = cmd.description.removePrefix("Test: ")
+                        // Find screenshot from test steps if any failed
+                        val testScreenshot = cmd.commands?.lastOrNull { it.screenshot != null }?.screenshot
+                        val testData = TestData(
+                            test = testName,
+                            file = currentFileName,
+                            status = cmd.status,
+                            durationMs = cmd.durationMs,
+                            error = cmd.error,
+                            screenshot = testScreenshot,
+                            steps = cmd.commands?.toMutableList() ?: mutableListOf()
+                        )
+
+                        val suite = currentSuite
+                        if (suite != null) {
+                            suite.tests.add(testData)
+                            // Update suite status if test failed
+                            if (cmd.status == "failed") {
+                                suite.status = "failed"
+                            }
+                        } else {
+                            // Test without suite - create default suite
+                            val defaultSuite = SuiteData(
+                                suite = flowName,
+                                status = cmd.status,
+                                durationMs = cmd.durationMs
+                            )
+                            defaultSuite.tests.add(testData)
+                            suites.add(defaultSuite)
+                            currentSuite = defaultSuite
+                        }
+                    }
+                    "runFlow" -> {
+                        // Extract file name from runFlow description
+                        // Format: "Run FlowName (path/to/file.yaml)" or "Run FlowName (path/to/file.yml)"
+                        val fileMatch = Regex("\\(([^)]+\\.ya?ml)\\)").find(cmd.description)
+                        val subFlowFile = fileMatch?.groupValues?.get(1)?.substringAfterLast("/") ?: currentFileName
+
+                        // Recursively process nested commands
+                        cmd.commands?.let { nestedCmds ->
+                            processCommands(nestedCmds, subFlowFile)
+                        }
+                    }
+                    else -> {
+                        // For other composite commands, also check nested commands
+                        cmd.commands?.let { nestedCmds ->
+                            processCommands(nestedCmds, currentFileName)
+                        }
+                    }
+                }
+            }
+        }
+
+        processCommands(commands, flowName)
+        return if (hasSuiteOrTest) suites else null
+    }
+
+    /**
+     * Aggregates suites from all flows globally.
+     * Suites with the same name are merged, tests track their source file.
+     */
+    private fun buildGlobalSuites(flows: List<FlowData>): MutableList<SuiteData>? {
+        val globalSuiteMap = mutableMapOf<String, SuiteData>()
+        var hasSuites = false
+
+        for (flow in flows) {
+            flow.suites?.forEach { flowSuite ->
+                hasSuites = true
+                val existing = globalSuiteMap[flowSuite.suite]
+                if (existing != null) {
+                    // Merge tests into existing suite
+                    existing.tests.addAll(flowSuite.tests)
+                    existing.durationMs += flowSuite.durationMs
+                    // Update status if any test failed
+                    if (flowSuite.status == "failed") {
+                        existing.status = "failed"
+                    }
+                } else {
+                    // Create new suite (copy to avoid modifying original)
+                    globalSuiteMap[flowSuite.suite] = SuiteData(
+                        suite = flowSuite.suite,
+                        status = flowSuite.status,
+                        durationMs = flowSuite.durationMs,
+                        tests = flowSuite.tests.toMutableList()
+                    )
+                }
+            }
+        }
+
+        return if (hasSuites) globalSuiteMap.values.toMutableList() else null
     }
 
     fun startCommand(command: MaestroCommand) {
@@ -149,6 +274,8 @@ object JsonReportGenerator {
             command.addMediaCommand != null -> "addMedia"
             command.setAirplaneModeCommand != null -> "setAirplaneMode"
             command.retryCommand != null -> "retry"
+            command.describeCommand != null -> "suite"
+            command.testCaseCommand != null -> "test"
             else -> "unknown"
         }
     }
@@ -290,6 +417,9 @@ object JsonReportGenerator {
                 endTime = isoFormatter.format(endTime)
             )
 
+            // Build global suite aggregation across all flows
+            report.suites = buildGlobalSuites(flows)
+
             val reportFile = dir.resolve("report.json").toFile()
             mapper.writeValue(reportFile, report)
 
@@ -325,31 +455,78 @@ object JsonReportGenerator {
     private fun generateJUnitReport(report: ReportData, dir: Path) {
         val s = report.summary
         val d = report.device
+        val suites = report.suites
+
         val xml = buildString {
             appendLine("""<?xml version="1.0" encoding="UTF-8"?>""")
-            appendLine("""<testsuites tests="${s.totalFlows}" failures="${s.failedFlows}" skipped="${s.skippedFlows}" errors="0" time="${s.totalDurationMs / 1000.0}">""")
-            appendLine("""  <testsuite name="Maestro Test Suite" tests="${s.totalFlows}" failures="${s.failedFlows}" skipped="${s.skippedFlows}" errors="0" time="${s.totalDurationMs / 1000.0}" timestamp="${s.startTime ?: ""}">""")
-            appendLine("""    <properties>""")
-            d?.let {
-                appendLine("""      <property name="device.name" value="${it.name.escapeXml()}"></property>""")
-                appendLine("""      <property name="device.platform" value="${it.platform.escapeXml()}"></property>""")
-                appendLine("""      <property name="device.osVersion" value="${it.osVersion.escapeXml()}"></property>""")
-            }
-            appendLine("""      <property name="framework" value="maestro"></property>""")
-            appendLine("""    </properties>""")
 
-            for (flow in report.flows) {
-                val timeSec = flow.durationMs / 1000.0
-                val name = flow.name.escapeXml()
-                append("""    <testcase name="$name" file="$name" time="$timeSec">""")
-                when (flow.status) {
-                    "failed" -> appendLine("""<failure message="${(flow.error ?: "Test failed").escapeXml()}">${(flow.error ?: "").escapeXml()}</failure></testcase>""")
-                    "skipped" -> appendLine("""<skipped/></testcase>""")
-                    else -> appendLine("""</testcase>""")
+            // If we have suites, use suite/test structure
+            if (!suites.isNullOrEmpty()) {
+                val totalTests = suites.sumOf { it.tests.size }
+                val failedTests = suites.sumOf { suite -> suite.tests.count { it.status == "failed" } }
+                val skippedTests = suites.sumOf { suite -> suite.tests.count { it.status == "skipped" } }
+                val totalTime = suites.sumOf { it.durationMs } / 1000.0
+
+                appendLine("""<testsuites tests="$totalTests" failures="$failedTests" skipped="$skippedTests" errors="0" time="$totalTime">""")
+
+                for (suite in suites) {
+                    val suiteTests = suite.tests.size
+                    val suiteFailed = suite.tests.count { it.status == "failed" }
+                    val suiteSkipped = suite.tests.count { it.status == "skipped" }
+                    val suiteTime = suite.durationMs / 1000.0
+                    val suiteName = suite.suite.escapeXml()
+
+                    appendLine("""  <testsuite name="$suiteName" tests="$suiteTests" failures="$suiteFailed" skipped="$suiteSkipped" errors="0" time="$suiteTime" timestamp="${s.startTime ?: ""}">""")
+                    appendLine("""    <properties>""")
+                    d?.let {
+                        appendLine("""      <property name="device.name" value="${it.name.escapeXml()}"></property>""")
+                        appendLine("""      <property name="device.platform" value="${it.platform.escapeXml()}"></property>""")
+                        appendLine("""      <property name="device.osVersion" value="${it.osVersion.escapeXml()}"></property>""")
+                    }
+                    appendLine("""      <property name="framework" value="maestro"></property>""")
+                    appendLine("""    </properties>""")
+
+                    for (test in suite.tests) {
+                        val testName = test.test.escapeXml()
+                        val testFile = (test.file ?: "unknown").escapeXml()
+                        val testTime = test.durationMs / 1000.0
+
+                        append("""    <testcase name="$testName" classname="$testFile" time="$testTime">""")
+                        when (test.status) {
+                            "failed" -> appendLine("""<failure message="${(test.error ?: "Test failed").escapeXml()}">${(test.error ?: "").escapeXml()}</failure></testcase>""")
+                            "skipped" -> appendLine("""<skipped/></testcase>""")
+                            else -> appendLine("""</testcase>""")
+                        }
+                    }
+                    appendLine("""  </testsuite>""")
                 }
+                appendLine("""</testsuites>""")
+            } else {
+                // Fallback to flow-based structure
+                appendLine("""<testsuites tests="${s.totalFlows}" failures="${s.failedFlows}" skipped="${s.skippedFlows}" errors="0" time="${s.totalDurationMs / 1000.0}">""")
+                appendLine("""  <testsuite name="Maestro Test Suite" tests="${s.totalFlows}" failures="${s.failedFlows}" skipped="${s.skippedFlows}" errors="0" time="${s.totalDurationMs / 1000.0}" timestamp="${s.startTime ?: ""}">""")
+                appendLine("""    <properties>""")
+                d?.let {
+                    appendLine("""      <property name="device.name" value="${it.name.escapeXml()}"></property>""")
+                    appendLine("""      <property name="device.platform" value="${it.platform.escapeXml()}"></property>""")
+                    appendLine("""      <property name="device.osVersion" value="${it.osVersion.escapeXml()}"></property>""")
+                }
+                appendLine("""      <property name="framework" value="maestro"></property>""")
+                appendLine("""    </properties>""")
+
+                for (flow in report.flows) {
+                    val timeSec = flow.durationMs / 1000.0
+                    val name = flow.name.escapeXml()
+                    append("""    <testcase name="$name" classname="$name" time="$timeSec">""")
+                    when (flow.status) {
+                        "failed" -> appendLine("""<failure message="${(flow.error ?: "Test failed").escapeXml()}">${(flow.error ?: "").escapeXml()}</failure></testcase>""")
+                        "skipped" -> appendLine("""<skipped/></testcase>""")
+                        else -> appendLine("""</testcase>""")
+                    }
+                }
+                appendLine("""  </testsuite>""")
+                appendLine("""</testsuites>""")
             }
-            appendLine("""  </testsuite>""")
-            appendLine("""</testsuites>""")
         }
         dir.resolve("junit-report.xml").toFile().writeText(xml)
     }
@@ -440,11 +617,69 @@ object JsonReportGenerator {
         .subflow-children { padding-left: 24px; }
         .subflow.collapsed .subflow-children { display: none; }
         .footer { text-align: center; padding: 24px; margin-top: 24px; color: var(--text-muted); font-size: 13px; }
+        /* Suite/Test styles */
+        .suite { background: var(--bg-primary); border: 1px solid var(--border-light); border-radius: 12px; margin-bottom: 12px; overflow: hidden; }
+        .suite-header { display: flex; justify-content: space-between; align-items: center; padding: 14px 20px; cursor: pointer; user-select: none; background: var(--bg-secondary); border-bottom: 1px solid var(--border-light); }
+        .suite-header:hover { background: #eef2f7; }
+        .suite-header-left { display: flex; align-items: center; gap: 12px; }
+        .suite-toggle { width: 20px; color: var(--text-muted); transition: transform 0.2s; }
+        .suite.collapsed .suite-toggle { transform: rotate(-90deg); }
+        .suite-status { font-size: 16px; }
+        .suite.passed .suite-status { color: var(--success); }
+        .suite.failed .suite-status { color: var(--failure); }
+        .suite-name { font-weight: 600; font-size: 15px; }
+        .suite-stats { font-size: 13px; color: var(--text-secondary); font-family: monospace; }
+        .suite-tests { border-top: 1px solid var(--border-light); }
+        .suite.collapsed .suite-tests { display: none; }
+        .test { border-bottom: 1px solid var(--border-light); }
+        .test:last-child { border-bottom: none; }
+        .test-header { display: flex; justify-content: space-between; align-items: center; padding: 10px 20px; cursor: pointer; }
+        .test-header:hover { background: var(--bg-secondary); }
+        .test-header-left { display: flex; align-items: center; gap: 10px; }
+        .test-status { font-size: 14px; }
+        .test.passed .test-status { color: var(--success); }
+        .test.failed .test-status { color: var(--failure); }
+        .test-name { font-size: 14px; }
+        .test-file { font-size: 12px; color: var(--text-muted); margin-left: 8px; }
+        .test-duration { font-size: 13px; color: var(--text-secondary); font-family: monospace; }
+        .test-steps { padding-left: 20px; background: var(--bg-secondary); }
+        .test.collapsed .test-steps { display: none; }
+        .tabs { display: flex; gap: 8px; margin-bottom: 16px; }
+        .tab { padding: 8px 16px; border: 1px solid var(--border-light); border-radius: 8px; cursor: pointer; font-size: 14px; background: var(--bg-primary); }
+        .tab.active { background: var(--accent); color: white; border-color: var(--accent); }
+        .tab-content { display: none; }
+        .tab-content.active { display: block; }
         .modal { display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.9); align-items: center; justify-content: center; z-index: 1000; padding: 32px; }
         .modal.active { display: flex; }
         .modal img { max-width: 100%; max-height: 100%; border-radius: 8px; }
         .modal-close { position: absolute; top: 20px; right: 20px; width: 44px; height: 44px; display: flex; align-items: center; justify-content: center; color: white; background: rgba(255,255,255,0.1); border: none; border-radius: 50%; cursor: pointer; font-size: 28px; }
         .modal-close:hover { background: rgba(255,255,255,0.2); }
+        /* Step Details Panel */
+        .step-details-panel { display: none; position: fixed; top: 0; right: 0; width: 450px; height: 100%; background: var(--bg-primary); box-shadow: -4px 0 20px rgba(0,0,0,0.15); z-index: 1000; overflow-y: auto; }
+        .step-details-panel.active { display: block; }
+        .step-details-header { display: flex; justify-content: space-between; align-items: center; padding: 16px 20px; background: var(--bg-secondary); border-bottom: 1px solid var(--border-light); position: sticky; top: 0; }
+        .step-details-header h3 { margin: 0; font-size: 16px; font-weight: 600; }
+        .step-details-close { width: 32px; height: 32px; display: flex; align-items: center; justify-content: center; background: none; border: 1px solid var(--border-light); border-radius: 6px; cursor: pointer; font-size: 18px; color: var(--text-secondary); }
+        .step-details-close:hover { background: var(--bg-secondary); color: var(--text-primary); }
+        .step-details-body { padding: 20px; }
+        .step-details-status { display: inline-flex; align-items: center; gap: 6px; padding: 6px 12px; border-radius: 6px; font-size: 13px; font-weight: 600; margin-bottom: 16px; }
+        .step-details-status.passed { background: #dcfce7; color: #166534; }
+        .step-details-status.failed { background: #fee2e2; color: #b91c1c; }
+        .step-details-section { margin-bottom: 20px; }
+        .step-details-section-title { font-size: 11px; font-weight: 600; text-transform: uppercase; color: var(--text-muted); margin-bottom: 8px; letter-spacing: 0.5px; }
+        .step-details-row { display: flex; padding: 8px 0; border-bottom: 1px solid var(--border-light); }
+        .step-details-row:last-child { border-bottom: none; }
+        .step-details-label { width: 100px; flex-shrink: 0; font-size: 13px; color: var(--text-muted); }
+        .step-details-value { flex: 1; font-size: 13px; word-break: break-word; }
+        .step-details-value.mono { font-family: monospace; }
+        .step-details-error { padding: 12px; background: #fee2e2; border-left: 3px solid var(--failure); border-radius: 0 6px 6px 0; color: #b91c1c; font-size: 12px; font-family: monospace; margin-top: 8px; }
+        .step-details-screenshot { margin-top: 12px; }
+        .step-details-screenshot img { max-width: 100%; border: 1px solid var(--border-light); border-radius: 8px; cursor: pointer; }
+        .step-details-screenshot img:hover { opacity: 0.9; }
+        .step-details-overlay { display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.3); z-index: 999; }
+        .step-details-overlay.active { display: block; }
+        .step.clickable { cursor: pointer; }
+        .step.clickable:hover { background: #e0f2fe; }
         @media (max-width: 768px) {
             .container { padding: 12px; }
             .header { padding: 16px; }
@@ -461,6 +696,14 @@ object JsonReportGenerator {
     <div class="modal" id="modal" onclick="closeModal()">
         <button class="modal-close" onclick="closeModal()">&times;</button>
         <img id="modal-img" src="" alt="Screenshot">
+    </div>
+    <div class="step-details-overlay" id="step-details-overlay" onclick="closeStepDetails()"></div>
+    <div class="step-details-panel" id="step-details-panel">
+        <div class="step-details-header">
+            <h3>Step Details</h3>
+            <button class="step-details-close" onclick="closeStepDetails()">&times;</button>
+        </div>
+        <div class="step-details-body" id="step-details-body"></div>
     </div>
     <script>
         const REPORT_DATA = {};
@@ -509,7 +752,8 @@ object JsonReportGenerator {
                     html += '<span class="step-duration">(' + formatDuration(cmd.durationMs) + ')</span></div></div>';
                     html += '<div class="subflow-children">' + renderCommands(cmd.commands, depth + 1) + '</div></div>';
                 } else {
-                    html += '<div class="step ' + statusClass + '">';
+                    const stepData = encodeURIComponent(JSON.stringify(cmd));
+                    html += '<div class="step clickable ' + statusClass + '" onclick="showStepDetails(\'' + stepData + '\')">';
                     html += '<span class="step-status">' + statusIcon + '</span>';
                     html += '<span class="step-index">[' + (cmd.index + 1) + ']</span>';
                     html += '<div class="step-content"><span class="step-name"><span class="cmd-type">' + escapeHtml(cmd.type) + ':</span> <span class="cmd-target">' + escapeHtml(target) + '</span></span>';
@@ -526,10 +770,65 @@ object JsonReportGenerator {
             return html;
         }
 
+        function renderSuites(suites) {
+            let html = '';
+            suites.forEach((suite, i) => {
+                const suiteId = 'suite-' + i;
+                const passedTests = suite.tests.filter(t => t.status === 'passed').length;
+                const failedTests = suite.tests.filter(t => t.status === 'failed').length;
+                const suiteStatus = failedTests > 0 ? 'failed' : 'passed';
+                const statusIcon = suiteStatus === 'passed' ? '✓' : '✗';
+
+                html += '<div class="suite ' + suiteStatus + '" id="' + suiteId + '">';
+                html += '<div class="suite-header" onclick="toggleSuite(\'' + suiteId + '\')">';
+                html += '<div class="suite-header-left"><span class="suite-toggle">▼</span><span class="suite-status">' + statusIcon + '</span>';
+                html += '<span class="suite-name">' + escapeHtml(suite.suite) + '</span></div>';
+                html += '<span class="suite-stats">' + passedTests + ' passed, ' + failedTests + ' failed</span></div>';
+                html += '<div class="suite-tests">';
+
+                suite.tests.forEach((test, j) => {
+                    const testId = suiteId + '-test-' + j;
+                    const testStatusIcon = test.status === 'passed' ? '✓' : '✗';
+                    html += '<div class="test ' + test.status + ' collapsed" id="' + testId + '">';
+                    html += '<div class="test-header" onclick="toggleTest(\'' + testId + '\')">';
+                    html += '<div class="test-header-left"><span class="test-status">' + testStatusIcon + '</span>';
+                    html += '<span class="test-name">' + escapeHtml(test.test) + '</span>';
+                    if (test.file) {
+                        html += '<span class="test-file">(' + escapeHtml(test.file) + ')</span>';
+                    }
+                    html += '</div>';
+                    html += '<span class="test-duration">' + formatDuration(test.durationMs) + '</span></div>';
+                    if (test.steps && test.steps.length > 0) {
+                        html += '<div class="test-steps">' + renderCommands(test.steps) + '</div>';
+                    }
+                    if (test.error) {
+                        html += '<div class="step-error">Error: ' + escapeHtml(test.error) + '</div>';
+                    }
+                    html += '</div>';
+                });
+
+                html += '</div></div>';
+            });
+            return html;
+        }
+
         function renderReport(data) {
             const s = data.summary;
             const d = data.device;
-            const passRate = s.totalFlows > 0 ? (s.passedFlows / s.totalFlows * 100).toFixed(0) : 0;
+            const hasSuites = data.suites && data.suites.length > 0;
+
+            // Calculate stats based on suites if available
+            let totalTests = 0, passedTests = 0, failedTests = 0;
+            if (hasSuites) {
+                data.suites.forEach(suite => {
+                    totalTests += suite.tests.length;
+                    passedTests += suite.tests.filter(t => t.status === 'passed').length;
+                    failedTests += suite.tests.filter(t => t.status === 'failed').length;
+                });
+            }
+            const passRate = hasSuites
+                ? (totalTests > 0 ? (passedTests / totalTests * 100).toFixed(0) : 0)
+                : (s.totalFlows > 0 ? (s.passedFlows / s.totalFlows * 100).toFixed(0) : 0);
 
             let html = '<div class="header"><div class="header-top"><div><h1>Maestro Test Results</h1>';
             html += '<div class="header-meta">' + formatDate(s.startTime) + ' at ' + formatTime(s.startTime) + '</div></div>';
@@ -537,13 +836,31 @@ object JsonReportGenerator {
                 html += '<div class="device-badge"><div><strong>' + escapeHtml(d.name) + '</strong><span>' + escapeHtml(d.platform) + ' ' + escapeHtml(d.osVersion) + '</span></div></div>';
             }
             html += '</div><div class="stats">';
-            html += '<div class="stat"><span class="stat-value">' + s.totalFlows + '</span><span class="stat-label">Total</span></div>';
-            html += '<div class="stat passed"><span class="stat-value">' + s.passedFlows + '</span><span class="stat-label">Passed</span></div>';
-            html += '<div class="stat failed"><span class="stat-value">' + s.failedFlows + '</span><span class="stat-label">Failed</span></div>';
+
+            if (hasSuites) {
+                html += '<div class="stat"><span class="stat-value">' + data.suites.length + '</span><span class="stat-label">Suites</span></div>';
+                html += '<div class="stat"><span class="stat-value">' + totalTests + '</span><span class="stat-label">Tests</span></div>';
+                html += '<div class="stat passed"><span class="stat-value">' + passedTests + '</span><span class="stat-label">Passed</span></div>';
+                html += '<div class="stat failed"><span class="stat-value">' + failedTests + '</span><span class="stat-label">Failed</span></div>';
+            } else {
+                html += '<div class="stat"><span class="stat-value">' + s.totalFlows + '</span><span class="stat-label">Total</span></div>';
+                html += '<div class="stat passed"><span class="stat-value">' + s.passedFlows + '</span><span class="stat-label">Passed</span></div>';
+                html += '<div class="stat failed"><span class="stat-value">' + s.failedFlows + '</span><span class="stat-label">Failed</span></div>';
+            }
             html += '<div class="stat duration"><span class="stat-value">' + formatDuration(s.totalDurationMs) + '</span><span class="stat-label">Duration</span></div>';
             html += '</div><div class="progress-row"><span class="progress-label">Pass Rate</span>';
             html += '<div class="progress-bar"><div class="progress-fill" style="width: ' + passRate + '%"></div></div>';
             html += '<span class="progress-value">' + passRate + '%</span></div></div>';
+
+            // Render tabs if we have both suites and flows
+            if (hasSuites) {
+                html += '<div class="tabs">';
+                html += '<div class="tab active" onclick="switchTab(\'suites\')">Suites</div>';
+                html += '<div class="tab" onclick="switchTab(\'flows\')">Flows</div>';
+                html += '</div>';
+                html += '<div id="tab-suites" class="tab-content active">' + renderSuites(data.suites) + '</div>';
+                html += '<div id="tab-flows" class="tab-content">';
+            }
 
             data.flows.forEach((flow, i) => {
                 const flowId = 'flow-' + i;
@@ -556,15 +873,92 @@ object JsonReportGenerator {
                 html += '<div class="steps">' + renderCommands(flow.commands) + '</div></div>';
             });
 
+            if (hasSuites) {
+                html += '</div>'; // Close tab-flows
+            }
+
             html += '<div class="footer">Report built by <a href="https://devicelab.dev" target="_blank" style="color: var(--accent); text-decoration: none;">DeviceLab.dev</a><br>Made with ❤️ by engineers who believe quality mobile testing should not require enterprise budgets.</div>';
             document.getElementById('content').innerHTML = html;
         }
 
         function toggleFlow(id) { document.getElementById(id).classList.toggle('collapsed'); }
         function toggleSubflow(id) { document.getElementById(id).classList.toggle('collapsed'); }
+        function toggleSuite(id) { document.getElementById(id).classList.toggle('collapsed'); }
+        function toggleTest(id) { document.getElementById(id).classList.toggle('collapsed'); }
+        function switchTab(tab) {
+            document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+            document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
+            document.querySelector('.tab[onclick*="' + tab + '"]').classList.add('active');
+            document.getElementById('tab-' + tab).classList.add('active');
+        }
         function openModal(src) { document.getElementById('modal-img').src = src; document.getElementById('modal').classList.add('active'); }
         function closeModal() { document.getElementById('modal').classList.remove('active'); }
-        document.addEventListener('keydown', function(e) { if (e.key === 'Escape') closeModal(); });
+
+        function showStepDetails(stepJson) {
+            const step = JSON.parse(decodeURIComponent(stepJson));
+            const statusIcon = step.status === 'passed' ? '✓' : '✗';
+
+            let html = '<div class="step-details-status ' + step.status + '">' + statusIcon + ' ' + (step.status === 'passed' ? 'Passed' : 'Failed') + '</div>';
+
+            // Command Info Section
+            html += '<div class="step-details-section">';
+            html += '<div class="step-details-section-title">Command</div>';
+            html += '<div class="step-details-row"><span class="step-details-label">Type</span><span class="step-details-value mono">' + escapeHtml(step.type || 'unknown') + '</span></div>';
+            html += '<div class="step-details-row"><span class="step-details-label">Description</span><span class="step-details-value">' + escapeHtml(step.description || '') + '</span></div>';
+            html += '</div>';
+
+            // Timing Section
+            html += '<div class="step-details-section">';
+            html += '<div class="step-details-section-title">Timing</div>';
+            html += '<div class="step-details-row"><span class="step-details-label">Duration</span><span class="step-details-value mono">' + formatDuration(step.durationMs || 0) + '</span></div>';
+            if (step.startTime) {
+                html += '<div class="step-details-row"><span class="step-details-label">Start</span><span class="step-details-value mono">' + formatTime(step.startTime) + '</span></div>';
+            }
+            if (step.endTime) {
+                html += '<div class="step-details-row"><span class="step-details-label">End</span><span class="step-details-value mono">' + formatTime(step.endTime) + '</span></div>';
+            }
+            html += '</div>';
+
+            // Execution Section
+            if (step.attempts || step.id) {
+                html += '<div class="step-details-section">';
+                html += '<div class="step-details-section-title">Execution</div>';
+                if (step.id) {
+                    html += '<div class="step-details-row"><span class="step-details-label">ID</span><span class="step-details-value mono">' + escapeHtml(step.id) + '</span></div>';
+                }
+                if (step.attempts) {
+                    html += '<div class="step-details-row"><span class="step-details-label">Attempts</span><span class="step-details-value">' + step.attempts + '</span></div>';
+                }
+                html += '</div>';
+            }
+
+            // Error Section
+            if (step.error) {
+                html += '<div class="step-details-section">';
+                html += '<div class="step-details-section-title">Error</div>';
+                html += '<div class="step-details-error">' + escapeHtml(step.error) + '</div>';
+                html += '</div>';
+            }
+
+            // Screenshot Section
+            if (step.screenshot) {
+                html += '<div class="step-details-section">';
+                html += '<div class="step-details-section-title">Screenshot</div>';
+                html += '<div class="step-details-screenshot"><img src="' + escapeHtml(step.screenshot) + '" onclick="openModal(\'' + escapeHtml(step.screenshot) + '\')" title="Click to enlarge"></div>';
+                html += '</div>';
+            }
+
+            document.getElementById('step-details-body').innerHTML = html;
+            document.getElementById('step-details-panel').classList.add('active');
+            document.getElementById('step-details-overlay').classList.add('active');
+        }
+
+        function closeStepDetails() {
+            document.getElementById('step-details-panel').classList.remove('active');
+            document.getElementById('step-details-overlay').classList.remove('active');
+        }
+
+        document.addEventListener('keydown', function(e) { if (e.key === 'Escape') { closeModal(); closeStepDetails(); } });
 
         if (REPORT_DATA && REPORT_DATA.summary) renderReport(REPORT_DATA);
     </script>
@@ -617,47 +1011,122 @@ object JsonReportGenerator {
 }"""
         allureDir.resolve("executor.json").toFile().writeText(executor)
 
-        // Generate flow results with nested steps
-        for (flow in report.flows) {
-            val stepsJson = buildAllureSteps(flow.commands)
-            val tagsJson = flow.tags?.joinToString(",\n    ") { """{ "name": "tag", "value": "${it.escapeJson()}" }""" } ?: ""
-            val labelsJson = buildString {
-                if (tagsJson.isNotEmpty()) {
-                    append(tagsJson)
-                    append(",\n    ")
-                }
-                append("""{ "name": "framework", "value": "maestro" },
-    { "name": "severity", "value": "normal" }""")
+        // Check if we have global suites (suite/test structure)
+        val globalSuites = report.suites
+        if (!globalSuites.isNullOrEmpty()) {
+            // Generate separate result file per test with proper suite labels
+            generateAllureTestResults(globalSuites, allureDir)
+        } else {
+            // Fallback: Generate flow results with nested steps (original behavior)
+            for (flow in report.flows) {
+                generateAllureFlowResult(flow, allureDir)
             }
-
-            val result = buildString {
-                appendLine("""{""")
-                appendLine("""  "uuid": "${flow.id}",""")
-                appendLine("""  "historyId": "${flow.id.hashCode().toString(16)}",""")
-                appendLine("""  "fullName": "${flow.name.escapeJson()}",""")
-                appendLine("""  "name": "${flow.name.escapeJson()}",""")
-                appendLine("""  "labels": [""")
-                appendLine("    $labelsJson")
-                appendLine("""  ],""")
-                appendLine("""  "status": "${flow.status}",""")
-                appendLine("""  "stage": "finished",""")
-                appendLine("""  "start": ${parseTimestamp(flow.startTime)},""")
-                appendLine("""  "stop": ${parseTimestamp(flow.endTime)},""")
-                if (stepsJson.isNotEmpty()) {
-                    appendLine("""  "steps": [$stepsJson""")
-                    appendLine("""  ]""")
-                } else {
-                    appendLine("""  "steps": []""")
-                }
-                flow.error?.let { err ->
-                    append(""",
-  "statusDetails": { "message": "${err.escapeJson()}" }""")
-                }
-                appendLine()
-                appendLine("""}""")
-            }
-            allureDir.resolve("${flow.id}-result.json").toFile().writeText(result)
         }
+    }
+
+    /**
+     * Generates Allure result files for suite/test structure.
+     * Each test becomes a separate result file with suite labels.
+     */
+    private fun generateAllureTestResults(suites: List<SuiteData>, allureDir: Path) {
+        var testCounter = 0
+        for (suite in suites) {
+            for (test in suite.tests) {
+                testCounter++
+                val testId = "test_%03d".format(testCounter)
+                val stepsJson = buildAllureSteps(test.steps)
+
+                val labelsJson = buildString {
+                    append("""{ "name": "suite", "value": "${suite.suite.escapeJson()}" }""")
+                    test.file?.let { file ->
+                        append(""",
+    { "name": "parentSuite", "value": "${file.escapeJson()}" }""")
+                    }
+                    append(""",
+    { "name": "framework", "value": "maestro" },
+    { "name": "severity", "value": "normal" }""")
+                }
+
+                val result = buildString {
+                    appendLine("""{""")
+                    appendLine("""  "uuid": "$testId",""")
+                    appendLine("""  "historyId": "${testId.hashCode().toString(16)}",""")
+                    appendLine("""  "fullName": "${suite.suite.escapeJson()} > ${test.test.escapeJson()}",""")
+                    appendLine("""  "name": "${test.test.escapeJson()}",""")
+                    appendLine("""  "labels": [""")
+                    appendLine("    $labelsJson")
+                    appendLine("""  ],""")
+                    appendLine("""  "status": "${test.status}",""")
+                    appendLine("""  "stage": "finished",""")
+                    // Use current time for start/stop since we don't track per-test timestamps
+                    val now = System.currentTimeMillis()
+                    appendLine("""  "start": ${now - test.durationMs},""")
+                    appendLine("""  "stop": $now,""")
+                    if (stepsJson.isNotEmpty()) {
+                        appendLine("""  "steps": [$stepsJson""")
+                        append("""  ]""")
+                    } else {
+                        append("""  "steps": []""")
+                    }
+                    test.error?.let { err ->
+                        appendLine(",")
+                        append("""  "statusDetails": { "message": "${err.escapeJson()}" }""")
+                    }
+                    test.screenshot?.let { screenshot ->
+                        val screenshotFile = screenshot.removePrefix("screenshots/")
+                        appendLine(",")
+                        append("""  "attachments": [{ "name": "Screenshot", "source": "$screenshotFile", "type": "image/png" }]""")
+                    }
+                    appendLine()
+                    appendLine("""}""")
+                }
+                allureDir.resolve("$testId-result.json").toFile().writeText(result)
+            }
+        }
+    }
+
+    /**
+     * Generates Allure result file for a flow (original behavior without suite/test).
+     */
+    private fun generateAllureFlowResult(flow: FlowData, allureDir: Path) {
+        val stepsJson = buildAllureSteps(flow.commands)
+        val tagsJson = flow.tags?.joinToString(",\n    ") { """{ "name": "tag", "value": "${it.escapeJson()}" }""" } ?: ""
+        val labelsJson = buildString {
+            if (tagsJson.isNotEmpty()) {
+                append(tagsJson)
+                append(",\n    ")
+            }
+            append("""{ "name": "framework", "value": "maestro" },
+    { "name": "severity", "value": "normal" }""")
+        }
+
+        val result = buildString {
+            appendLine("""{""")
+            appendLine("""  "uuid": "${flow.id}",""")
+            appendLine("""  "historyId": "${flow.id.hashCode().toString(16)}",""")
+            appendLine("""  "fullName": "${flow.name.escapeJson()}",""")
+            appendLine("""  "name": "${flow.name.escapeJson()}",""")
+            appendLine("""  "labels": [""")
+            appendLine("    $labelsJson")
+            appendLine("""  ],""")
+            appendLine("""  "status": "${flow.status}",""")
+            appendLine("""  "stage": "finished",""")
+            appendLine("""  "start": ${parseTimestamp(flow.startTime)},""")
+            appendLine("""  "stop": ${parseTimestamp(flow.endTime)},""")
+            if (stepsJson.isNotEmpty()) {
+                appendLine("""  "steps": [$stepsJson""")
+                appendLine("""  ]""")
+            } else {
+                appendLine("""  "steps": []""")
+            }
+            flow.error?.let { err ->
+                append(""",
+  "statusDetails": { "message": "${err.escapeJson()}" }""")
+            }
+            appendLine()
+            appendLine("""}""")
+        }
+        allureDir.resolve("${flow.id}-result.json").toFile().writeText(result)
     }
 
     private fun buildAllureSteps(commands: List<CommandData>?, indent: String = "    "): String {
@@ -734,7 +1203,8 @@ data class ReportData(
     val schemaVersion: String,
     var summary: SummaryData,
     var device: DeviceData?,
-    val flows: MutableList<FlowData>
+    val flows: MutableList<FlowData>,
+    var suites: MutableList<SuiteData>? = null  // Global suite aggregation across all flows
 )
 
 data class SummaryData(
@@ -767,7 +1237,8 @@ data class FlowData(
     var endTime: String?,
     var durationMs: Long,
     var error: String? = null,
-    val commands: MutableList<CommandData>
+    val commands: MutableList<CommandData>,
+    var suites: MutableList<SuiteData>? = null
 )
 
 data class CommandData(
@@ -788,4 +1259,21 @@ data class CommandData(
 
 data class SubFlowData(
     val name: String
+)
+
+data class SuiteData(
+    val suite: String,
+    var status: String,
+    var durationMs: Long = 0,
+    val tests: MutableList<TestData> = mutableListOf()
+)
+
+data class TestData(
+    val test: String,
+    val file: String? = null,
+    var status: String,
+    var durationMs: Long = 0,
+    var error: String? = null,
+    var screenshot: String? = null,
+    val steps: MutableList<CommandData> = mutableListOf()
 )

@@ -150,7 +150,7 @@ class AnsiResultView(
             ?.any { subCommand -> subCommand.status != CommandStatus.PENDING } ?: false)
         val onCompleteHasNotPending = (commandState.subOnCompleteCommands
             ?.any { subCommand -> subCommand.status != CommandStatus.PENDING } ?: false)
-        val expandSubCommands = commandState.status in setOf(CommandStatus.RUNNING, CommandStatus.FAILED) &&
+        val expandSubCommands = commandState.status in setOf(CommandStatus.RUNNING, CommandStatus.FAILED, CommandStatus.COMPLETED) &&
                 (subCommandsHasNotPending || onStartHasNotPending || onCompleteHasNotPending)
 
         if (expandSubCommands) {

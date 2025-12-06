@@ -2,6 +2,8 @@ package maestro.cli.runner
 
 import maestro.orchestra.Command
 import maestro.orchestra.CompositeCommand
+import maestro.orchestra.DescribeCommand
+import maestro.orchestra.TestCaseCommand
 import org.fusesource.jansi.Ansi
 import kotlin.time.Duration
 
@@ -12,21 +14,28 @@ import kotlin.time.Duration
 class MochaStepReporter {
 
     private var currentFlowName: String? = null
+    private var currentDisplayName: String? = null
     private var indentLevel = 0
     private var currentFlowStats: FlowStats? = null
     private val allFlowStats = mutableListOf<FlowStats>()
 
-    fun onFlowStart(flowName: String) {
+    // Suite/test tracking for hierarchical summary
+    private val allSuites = mutableMapOf<String, SuiteResult>()
+    private var currentSuiteName: String? = null
+    private var hasTestStructure = false
+
+    fun onFlowStart(displayName: String, tableName: String = displayName) {
         if (currentFlowName == null) {
             println() // blank lines at start
             println()
         } else {
             println() // blank line between flows
         }
-        println(Ansi.ansi().bold().a("  $flowName").reset())
-        currentFlowName = flowName
+        println(Ansi.ansi().bold().a("  $displayName").reset())
+        currentFlowName = tableName
+        currentDisplayName = displayName
         indentLevel = 1
-        currentFlowStats = FlowStats(flowName)
+        currentFlowStats = FlowStats(tableName)
     }
 
     fun onFlowComplete(flowName: String, passed: Boolean, duration: Duration?, errorMessage: String?) {
@@ -36,13 +45,16 @@ class MochaStepReporter {
             allFlowStats.add(it)
         }
 
+        // Use display name for the completion message (has file path), fall back to flowName
+        val displayName = currentDisplayName ?: flowName
         val errorStr = if (!passed && errorMessage != null) " ($errorMessage)" else ""
         println(Ansi.ansi()
             .fg(getPassFailColor(passed))
-            .a("  ${getPassFailSymbol(passed)} $flowName ${duration?.let { formatDuration(it) } ?: ""}$errorStr")
+            .a("  ${getPassFailSymbol(passed)} $displayName ${duration?.let { formatDuration(it) } ?: ""}$errorStr")
             .reset())
 
         currentFlowStats = null
+        currentDisplayName = null
     }
 
     fun onCommandStart(command: Command) {
@@ -58,6 +70,28 @@ class MochaStepReporter {
     fun onCommandWarned(command: Command) = handleCommand(command, CommandStatus.WARNED)
 
     private fun handleCommand(command: Command, status: CommandStatus) {
+        // Track describe/suite commands
+        if (command is DescribeCommand) {
+            hasTestStructure = true
+            currentSuiteName = command.description
+            if (!allSuites.containsKey(command.description)) {
+                allSuites[command.description] = SuiteResult(command.description)
+            }
+        }
+
+        // Track it/test commands
+        if (command is TestCaseCommand) {
+            hasTestStructure = true
+            val passed = status == CommandStatus.COMPLETED
+            val skipped = status == CommandStatus.SKIPPED
+            val testResult = TestResult(command.testName, passed, skipped)
+
+            val suiteName = currentSuiteName
+            if (suiteName != null && allSuites.containsKey(suiteName)) {
+                allSuites[suiteName]?.tests?.add(testResult)
+            }
+        }
+
         if (command is CompositeCommand) {
             if (command.visible()) indentLevel = maxOf(0, indentLevel - 1)
             return
@@ -76,6 +110,11 @@ class MochaStepReporter {
         println()
         println()
 
+        // Print hierarchical Test Summary if suites/tests were found
+        if (hasTestStructure && allSuites.isNotEmpty()) {
+            printTestSummary()
+        }
+
         // Step summary
         println(Ansi.ansi().fgGreen().a("  ${totals.passed} steps passing${totals.duration?.let { " (${formatDuration(it)})" } ?: ""}").reset())
         if (totals.failed > 0) println(Ansi.ansi().fgRed().a("  ${totals.failed} steps failing").reset())
@@ -89,6 +128,40 @@ class MochaStepReporter {
         println(Ansi.ansi().fg(getPassFailColor(allPassed)).a("  $flowsPassed/${allFlowStats.size} Flows Passed").reset())
 
         if (allFlowStats.size > 1) printSummaryTable(totals)
+    }
+
+    private fun printTestSummary() {
+        val totalTests = allSuites.values.sumOf { it.tests.size }
+        val passedTests = allSuites.values.sumOf { it.passedCount }
+        val failedTests = allSuites.values.sumOf { it.failedCount }
+        val skippedTests = allSuites.values.sumOf { it.skippedCount }
+        val passedSuites = allSuites.values.count { it.passed }
+        val failedSuites = allSuites.values.count { !it.passed }
+
+        println("===== Test Summary =====")
+        println()
+
+        // Suites and tests
+        for (suite in allSuites.values) {
+            val suiteIcon = if (suite.passed) "✅" else "❌"
+            println("$suiteIcon ${suite.name}")
+
+            for (test in suite.tests) {
+                val testIcon = when {
+                    test.skipped -> "⏭️"
+                    test.passed -> "✅"
+                    else -> "❌"
+                }
+                println("  $testIcon ${test.name}")
+            }
+        }
+
+        println()
+        println("========================")
+        println("Suites: $passedSuites passed, $failedSuites failed")
+        val skippedStr = if (skippedTests > 0) ", $skippedTests skipped" else ""
+        println("Tests:  $passedTests passed, $failedTests failed$skippedStr")
+        println()
     }
 
     private fun printSummaryTable(totals: Totals) {
@@ -192,5 +265,19 @@ class MochaStepReporter {
                 else -> {}
             }
         }
+    }
+
+    private data class TestResult(
+        val name: String,
+        val passed: Boolean,
+        val skipped: Boolean = false
+    )
+
+    private class SuiteResult(val name: String) {
+        val tests = mutableListOf<TestResult>()
+        val passed: Boolean get() = tests.none { !it.passed && !it.skipped }
+        val passedCount: Int get() = tests.count { it.passed }
+        val failedCount: Int get() = tests.count { !it.passed && !it.skipped }
+        val skippedCount: Int get() = tests.count { it.skipped }
     }
 }

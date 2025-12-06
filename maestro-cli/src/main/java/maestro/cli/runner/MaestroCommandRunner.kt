@@ -75,6 +75,14 @@ object MaestroCommandRunner {
         val commandStatuses = IdentityHashMap<MaestroCommand, CommandStatus>()
         val commandMetadata = IdentityHashMap<MaestroCommand, Orchestra.CommandMetadata>()
 
+        // Find the original command from an evaluated command by looking through metadata
+        fun findOriginalCommand(evaluatedCommand: MaestroCommand): MaestroCommand {
+            return commandMetadata.entries
+                .find { it.value.evaluatedCommand == evaluatedCommand }
+                ?.key
+                ?: evaluatedCommand
+        }
+
         fun refreshUi() {
             view.setState(
                 UiState.Running(
@@ -109,33 +117,36 @@ object MaestroCommandRunner {
             maestro = maestro,
             screenshotsDir = testOutputDir?.resolve("screenshots"),
             insights = CliInsights,
-            onCommandStart = { _, command ->
-                logger.info("${command.description()} RUNNING")
-                commandStatuses[command] = CommandStatus.RUNNING
-                debugOutput.commands[command] = CommandDebugMetadata(
+            onCommandStart = { _, evaluatedCommand ->
+                val originalCommand = findOriginalCommand(evaluatedCommand)
+                logger.info("${evaluatedCommand.description()} RUNNING")
+                commandStatuses[originalCommand] = CommandStatus.RUNNING
+                debugOutput.commands[originalCommand] = CommandDebugMetadata(
                     timestamp = System.currentTimeMillis(),
                     status = CommandStatus.RUNNING
                 )
-                JsonReportGenerator.startCommand(command)
+                JsonReportGenerator.startCommand(evaluatedCommand)
 
                 refreshUi()
             },
-            onCommandComplete = { _, command ->
-                logger.info("${command.description()} COMPLETED")
-                commandStatuses[command] = CommandStatus.COMPLETED
+            onCommandComplete = { _, evaluatedCommand ->
+                val originalCommand = findOriginalCommand(evaluatedCommand)
+                logger.info("${evaluatedCommand.description()} COMPLETED")
+                commandStatuses[originalCommand] = CommandStatus.COMPLETED
                 if (analyze) {
                     ScreenshotUtils.takeDebugScreenshotByCommand(maestro, debugOutput, CommandStatus.COMPLETED)
                 }
 
-                debugOutput.commands[command]?.apply {
+                debugOutput.commands[originalCommand]?.apply {
                     status = CommandStatus.COMPLETED
                     calculateDuration()
                 }
                 JsonReportGenerator.endCommand(CommandStatus.COMPLETED)
                 refreshUi()
             },
-            onCommandFailed = { _, command, e ->
-                debugOutput.commands[command]?.apply {
+            onCommandFailed = { _, evaluatedCommand, e ->
+                val originalCommand = findOriginalCommand(evaluatedCommand)
+                debugOutput.commands[originalCommand]?.apply {
                     status = CommandStatus.FAILED
                     calculateDuration()
                     error = e
@@ -149,25 +160,27 @@ object MaestroCommandRunner {
                     debugOutput.exception = e
                 }
 
-                logger.info("${command.description()} FAILED")
-                commandStatuses[command] = CommandStatus.FAILED
+                logger.info("${evaluatedCommand.description()} FAILED")
+                commandStatuses[originalCommand] = CommandStatus.FAILED
                 JsonReportGenerator.endCommand(CommandStatus.FAILED, e.message)
                 refreshUi()
                 Orchestra.ErrorResolution.FAIL
             },
-            onCommandSkipped = { _, command ->
-                logger.info("${command.description()} SKIPPED")
-                commandStatuses[command] = CommandStatus.SKIPPED
-                debugOutput.commands[command]?.apply {
+            onCommandSkipped = { _, evaluatedCommand ->
+                val originalCommand = findOriginalCommand(evaluatedCommand)
+                logger.info("${evaluatedCommand.description()} SKIPPED")
+                commandStatuses[originalCommand] = CommandStatus.SKIPPED
+                debugOutput.commands[originalCommand]?.apply {
                     status = CommandStatus.SKIPPED
                 }
                 JsonReportGenerator.endCommand(CommandStatus.SKIPPED)
                 refreshUi()
             },
-            onCommandWarned = { _, command ->
-                logger.info("${command.description()} WARNED")
-                commandStatuses[command] = CommandStatus.WARNED
-                debugOutput.commands[command]?.apply {
+            onCommandWarned = { _, evaluatedCommand ->
+                val originalCommand = findOriginalCommand(evaluatedCommand)
+                logger.info("${evaluatedCommand.description()} WARNED")
+                commandStatuses[originalCommand] = CommandStatus.WARNED
+                debugOutput.commands[originalCommand]?.apply {
                     status = CommandStatus.WARNED
                 }
                 JsonReportGenerator.endCommand(CommandStatus.WARNED)
@@ -176,10 +189,11 @@ object MaestroCommandRunner {
 
                 refreshUi()
             },
-            onCommandReset = { command ->
-                logger.info("${command.description()} PENDING")
-                commandStatuses[command] = CommandStatus.PENDING
-                debugOutput.commands[command]?.apply {
+            onCommandReset = { evaluatedCommand ->
+                val originalCommand = findOriginalCommand(evaluatedCommand)
+                logger.info("${evaluatedCommand.description()} PENDING")
+                commandStatuses[originalCommand] = CommandStatus.PENDING
+                debugOutput.commands[originalCommand]?.apply {
                     status = CommandStatus.PENDING
                 }
                 refreshUi()

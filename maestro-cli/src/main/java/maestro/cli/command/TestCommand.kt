@@ -297,7 +297,7 @@ class TestCommand : Callable<Int> {
         println()
         println()
         println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
-        println("⚠️  Unofficial community build. Not affiliated with mobile.dev or Maestro.")
+        println("⚠️  Unofficial community build. Not affiliated with Maestro or mobile.dev.")
         println("    Enhanced reporting by \u001B]8;;https://devicelab.dev\u0007\u001B[36mDeviceLab.dev\u001B[0m\u001B]8;;\u0007")
         println("    With \u001B[31m❤️\u001B[0m by engineers who believe quality mobile testing shouldn't require enterprise budgets.")
         println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
@@ -328,6 +328,8 @@ class TestCommand : Callable<Int> {
         Analytics.flush()
 
         // Save reports and print paths
+        println()
+        println("Generating reports (HTML, JSON, JUnit, Allure)...")
         JsonReportGenerator.save()
         JsonReportGenerator.printReportPaths()
 

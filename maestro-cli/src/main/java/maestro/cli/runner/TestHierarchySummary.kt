@@ -14,6 +14,7 @@ object TestHierarchySummary {
     data class TestResult(
         val name: String,
         val passed: Boolean,
+        val skipped: Boolean = false,
         val stepCount: Int = 0
     )
 
@@ -21,9 +22,10 @@ object TestHierarchySummary {
         val name: String,
         val tests: MutableList<TestResult> = mutableListOf()
     ) {
-        val passed: Boolean get() = tests.all { it.passed }
+        val passed: Boolean get() = tests.none { !it.passed && !it.skipped }
         val passedCount: Int get() = tests.count { it.passed }
-        val failedCount: Int get() = tests.count { !it.passed }
+        val failedCount: Int get() = tests.count { !it.passed && !it.skipped }
+        val skippedCount: Int get() = tests.count { it.skipped }
     }
 
     /**
@@ -49,10 +51,12 @@ object TestHierarchySummary {
                 is TestCaseCommand -> {
                     hasDescribeOrIt = true
                     val status = commandStatuses[command] ?: CommandStatus.PENDING
-                    val passed = status == CommandStatus.COMPLETED || status == CommandStatus.SKIPPED
+                    val passed = status == CommandStatus.COMPLETED
+                    val skipped = status == CommandStatus.SKIPPED
                     val testResult = TestResult(
                         name = cmd.testName,
                         passed = passed,
+                        skipped = skipped,
                         stepCount = cmd.steps.size
                     )
                     if (currentSuite != null) {
@@ -79,6 +83,7 @@ object TestHierarchySummary {
         val totalTests = suites.sumOf { it.tests.size }
         val passedTests = suites.sumOf { it.passedCount }
         val failedTests = suites.sumOf { it.failedCount }
+        val skippedTests = suites.sumOf { it.skippedCount }
         val passedSuites = suites.count { it.passed }
         val failedSuites = suites.count { !it.passed }
 
@@ -96,7 +101,11 @@ object TestHierarchySummary {
             println("  $suiteIcon ${suite.name}")
 
             for (test in suite.tests) {
-                val testIcon = if (test.passed) "✅" else "❌"
+                val testIcon = when {
+                    test.skipped -> "⏭️"
+                    test.passed -> "✅"
+                    else -> "❌"
+                }
                 println("    $testIcon ${test.name}")
             }
         }
@@ -104,7 +113,8 @@ object TestHierarchySummary {
         println()
         println("========================")
         println("Suites: $passedSuites passed, $failedSuites failed")
-        println("Tests:  $passedTests passed, $failedTests failed")
+        val skippedStr = if (skippedTests > 0) ", $skippedTests skipped" else ""
+        println("Tests:  $passedTests passed, $failedTests failed$skippedStr")
         println()
     }
 }

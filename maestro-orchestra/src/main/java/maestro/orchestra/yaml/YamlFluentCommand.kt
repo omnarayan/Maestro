@@ -139,7 +139,9 @@ data class YamlFluentCommand(
     val toggleAirplaneMode: YamlToggleAirplaneMode? = null,
     val retry: YamlRetryCommand? = null,
     val describe: String? = null,
+    val suite: String? = null,  // alias for describe
     val `it`: String? = null,
+    val test: String? = null,   // alias for it
     val steps: List<YamlFluentCommand>? = null,
     @JsonIgnore val _location: JsonLocation,
 ) {
@@ -154,6 +156,18 @@ data class YamlFluentCommand(
 
     @SuppressWarnings("ComplexMethod")
     private fun _toCommands(flowPath: Path, appId: String): List<MaestroCommand> {
+        // Validate that both describe and suite (or both it and test) are not provided simultaneously
+        if (describe != null && suite != null) {
+            throw SyntaxError("Cannot use both 'describe' and 'suite' in the same command. Use one or the other.")
+        }
+        if (`it` != null && test != null) {
+            throw SyntaxError("Cannot use both 'it' and 'test' in the same command. Use one or the other.")
+        }
+        // Validate that test/it commands have steps
+        if ((`it` != null || test != null) && steps == null) {
+            throw SyntaxError("'test' (or 'it') command requires 'steps' field with list of commands.")
+        }
+
         return when {
             launchApp != null -> listOf(launchApp(launchApp, appId))
             tapOn != null -> listOf(tapCommand(tapOn))
@@ -456,18 +470,18 @@ data class YamlFluentCommand(
                 )
             )
 
-            describe != null -> listOf(
+            describe != null || suite != null -> listOf(
                 MaestroCommand(
                     DescribeCommand(
-                        description = describe,
+                        description = describe ?: suite!!,
                     )
                 )
             )
 
-            `it` != null && steps != null -> listOf(
+            (`it` != null || test != null) && steps != null -> listOf(
                 MaestroCommand(
                     TestCaseCommand(
-                        testName = `it`,
+                        testName = `it` ?: test!!,
                         steps = steps.flatMap { step -> step.toCommands(flowPath, appId) },
                     )
                 )
