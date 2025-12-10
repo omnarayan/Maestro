@@ -174,6 +174,12 @@ class TestCommand : Callable<Int> {
     private var reportDir: String? = null
 
     @Option(
+        names = ["--flatten-report-output"],
+        description = ["All report files are created in the folder without timestamp subfolders. Useful for CI."]
+    )
+    private var flattenReportOutput: Boolean = false
+
+    @Option(
         names = ["--include-tags"],
         description = ["List of tags that will remove the Flows that does not have the provided tags"],
         split = ",",
@@ -240,10 +246,15 @@ class TestCommand : Callable<Int> {
     }
   
     override fun call(): Int {
+        // Initialize JSON report generator first (creates report dir for logging)
+        JsonReportGenerator.init(reportDir, flattenReportOutput)
+
+        // Install debug reporter with report dir for maestro.log
         TestDebugReporter.install(
             debugOutputPathAsString = debugOutput,
             flattenDebugOutput = flattenDebugOutput,
             printToConsole = parent?.verbose == true,
+            logOutputDir = JsonReportGenerator.getReportDir()
         )
 
         // Set app file path as system property (process-scoped) for use by device controllers
@@ -284,9 +295,6 @@ class TestCommand : Callable<Int> {
         // Update TestDebugReporter with the resolved test output directory
         TestDebugReporter.updateTestOutputDir(resolvedTestOutputDir)
         val debugOutputPath = TestDebugReporter.getDebugOutputPath()
-
-        // Initialize JSON report generator
-        JsonReportGenerator.init(reportDir)
 
         // Track test execution start
         val flowCount = executionPlan.flowsToRun.size

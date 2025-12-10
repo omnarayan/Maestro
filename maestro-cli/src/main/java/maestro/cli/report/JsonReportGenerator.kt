@@ -41,10 +41,14 @@ object JsonReportGenerator {
     private var flowCounter = 0
     private var commandCounters = mutableListOf<Int>()
 
-    fun init(reportDirPath: String? = null) {
+    fun init(reportDirPath: String? = null, flattenOutput: Boolean = false) {
         val baseDir = reportDirPath ?: "./reports"
-        val timestamp = timestampFormatter.format(LocalDateTime.now())
-        reportDir = Paths.get(baseDir, timestamp)
+        reportDir = if (flattenOutput) {
+            Paths.get(baseDir)
+        } else {
+            val timestamp = timestampFormatter.format(LocalDateTime.now())
+            Paths.get(baseDir, timestamp)
+        }
         Files.createDirectories(reportDir)
 
         // Create screenshots folder
